@@ -1,4 +1,11 @@
 /target
+/gen
+/node_modules
 /frontend/node_modules
 /bridge/node_modules
+/frontend/dist
+/frontend/tsconfig.tsbuildinfo
 /.runtime
+.env
+.env.*
+!.env.example

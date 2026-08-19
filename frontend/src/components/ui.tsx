@@ -1,4 +1,4 @@
-import type { ButtonHTMLAttributes, InputHTMLAttributes, TextareaHTMLAttributes } from "react";
+import type { ButtonHTMLAttributes, InputHTMLAttributes, SelectHTMLAttributes, TextareaHTMLAttributes } from "react";
 import type { ReactNode } from "react";
 
 export function Button({ className = "", ...props }: ButtonHTMLAttributes<HTMLButtonElement>) {
@@ -11,6 +11,10 @@ export function Input({ className = "", ...props }: InputHTMLAttributes<HTMLInpu
 
 export function Textarea({ className = "", ...props }: TextareaHTMLAttributes<HTMLTextAreaElement>) {
   return <textarea className={`textarea ${className}`} {...props} />;
+}
+
+export function Select({ className = "", ...props }: SelectHTMLAttributes<HTMLSelectElement>) {
+  return <select className={`select ${className}`} {...props} />;
 }
 
 export function Card({ className = "", children }: { className?: string; children: ReactNode }) {

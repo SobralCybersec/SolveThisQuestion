@@ -1,11 +1,11 @@
 {
-  "name": "screen-agent-playwright-bridge",
+  "name": "@screen-agent/bridge",
   "private": true,
   "type": "module",
   "scripts": {
     "smoke": "node index.mjs"
   },
   "dependencies": {
-    "playwright": "^1.52.0"
+    "playwright": "^1.60.0"
   }
 }

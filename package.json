@@ -1,0 +1,19 @@
+{
+  "name": "screen-agent",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@10.15.0",
+  "scripts": {
+    "dev": "pnpm --filter @screen-agent/frontend dev",
+    "dev:api": "cargo run",
+    "app": "cargo tauri dev",
+    "desktop:dev": "cargo tauri dev",
+    "desktop": "pnpm build && cargo run",
+    "desktop:build": "pnpm build && cargo build --release",
+    "build": "pnpm --filter @screen-agent/frontend build",
+    "check": "cargo check && pnpm --filter @screen-agent/frontend build",
+    "bridge:install": "pnpm --dir bridge install",
+    "bridge:smoke": "pnpm --dir bridge smoke"
+  },
+  "engines": { "node": ">=20" }
+}
