@@ -659,24 +659,19 @@ async function chatGPTComposerText(composer) {
 }
 
 async function submitChatGPTPrompt(page, composer) {
-  await composer.press('Enter').catch(() => {})
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    if (!await chatGPTComposerText(composer)) {
-      bridgeDebug('chatgpt prompt submitted via keyboard')
-      return
-    }
-    await sleep(200)
-  }
-
-  const deadline = Date.now() + 15000
+  // Prefer the send button, but only once it's actually enabled. With an image
+  // attachment ChatGPT keeps send disabled until the upload finishes, and a
+  // premature Enter just inserts a newline in the ProseMirror composer instead
+  // of sending — so wait for the button rather than firing Enter first.
+  // Headless uploads can be slow; give it a full minute.
+  const deadline = Date.now() + 60000
   while (Date.now() < deadline) {
     const sendButton = page.locator(CHATGPT_SEND_SELECTOR).last()
-    if (await sendButton.count() && await sendButton.isVisible().catch(() => false)) {
-      if (await sendButton.isDisabled().catch(() => false)) {
-        await sleep(300)
-        continue
-      }
-      await sendButton.click({ force: true })
+    const ready = await sendButton.count()
+      && await sendButton.isVisible().catch(() => false)
+      && !await sendButton.isDisabled().catch(() => true)
+    if (ready) {
+      await sendButton.click({ force: true }).catch(() => {})
       for (let attempt = 0; attempt < 20; attempt += 1) {
         if (!await chatGPTComposerText(composer)) {
           bridgeDebug('chatgpt prompt submitted via send button')
@@ -686,6 +681,16 @@ async function submitChatGPTPrompt(page, composer) {
       }
     }
     await sleep(300)
+  }
+
+  // Last resort once the upload window has passed: keyboard submit.
+  await composer.press('Enter').catch(() => {})
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    if (!await chatGPTComposerText(composer)) {
+      bridgeDebug('chatgpt prompt submitted via keyboard')
+      return
+    }
+    await sleep(200)
   }
   throw new Error('ChatGPT composer did not submit prompt')
 }
@@ -1472,11 +1477,17 @@ async function chatChatGPTWithImage({ runtime_dir, browser, image_path, prompt, 
   await composer.fill(message)
   await submitChatGPTPrompt(page, composer)
 
-  // Wait for the assistant reply to finish streaming: poll its text until it
-  // stops growing for STABLE_MS. Breaking on the first non-empty read (the old
-  // behavior) captured a half-streamed, cropped answer for anything slow.
-  const deadline = Date.now() + 180000
-  const STABLE_MS = 1500
+  // Wait for the assistant reply to finish streaming, then capture it whole.
+  // All timings env-configurable (ms): total cap, and how long the text must
+  // hold steady before we treat it as done.
+  const answerTimeout = Number(process.env.SCREEN_AGENT_ANSWER_TIMEOUT_MS || 180000)
+  const stableMs = Number(process.env.SCREEN_AGENT_ANSWER_STABLE_MS || 2500)
+  // Code streams in bursts with long pauses between them; a short stability
+  // window mistakes a mid-block pause for completion and crops the code. Hold
+  // out much longer whenever a code fence is present so it lands complete.
+  const codeStableMs = Number(process.env.SCREEN_AGENT_ANSWER_CODE_STABLE_MS || 8000)
+  const stopButton = page.locator('button[data-testid="stop-button"], button[aria-label="Stop streaming"]')
+  const deadline = Date.now() + answerTimeout
   let answer = ''
   let lastText = ''
   let lastChange = Date.now()
@@ -1486,9 +1497,15 @@ async function chatChatGPTWithImage({ runtime_dir, browser, image_path, prompt, 
       if (text !== lastText) {
         lastText = text
         lastChange = Date.now()
-      } else if (text && Date.now() - lastChange >= STABLE_MS) {
-        answer = text
-        break
+      } else if (text) {
+        // Not done until ChatGPT drops its stop button (streaming ended) AND the
+        // text has held steady — a wider window when a code block is present.
+        const streaming = await stopButton.count() && await stopButton.first().isVisible().catch(() => false)
+        const window = text.includes('```') ? codeStableMs : stableMs
+        if (!streaming && Date.now() - lastChange >= window) {
+          answer = text
+          break
+        }
       }
     }
     await sleep(500)

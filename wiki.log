@@ -1,0 +1,15 @@
+{"duration_ms":0.0,"event":"command_start","invocation_id":"738879-1787157227356","meta":{"command":"check","json_output":true},"pid":738879,"status":"ok","timestamp_ms":1787157227356}
+{"duration_ms":2.224816,"event":"startup","invocation_id":"738879-1787157227356","meta":{"command":"check"},"pid":738879,"status":"ok","timestamp_ms":1787157227356}
+{"duration_ms":0.0,"event":"discover_files_result","invocation_id":"738879-1787157227356","meta":{"count":0},"pid":738879,"status":"ok","timestamp_ms":1787157227369}
+{"duration_ms":12.622468,"event":"discover_files","invocation_id":"738879-1787157227356","meta":{"globs":[]},"pid":738879,"status":"ok","timestamp_ms":1787157227369}
+{"duration_ms":12.844737,"event":"command_finish","invocation_id":"738879-1787157227356","meta":{"command":"check","exit_code":2},"pid":738879,"status":"ok","timestamp_ms":1787157227369}
+{"duration_ms":0.0,"event":"command_start","invocation_id":"742902-1787157278250","meta":{"command":"check","json_output":true},"pid":742902,"status":"ok","timestamp_ms":1787157278250}
+{"duration_ms":1.007606,"event":"startup","invocation_id":"742902-1787157278250","meta":{"command":"check"},"pid":742902,"status":"ok","timestamp_ms":1787157278250}
+{"duration_ms":0.0,"event":"discover_files_result","invocation_id":"742902-1787157278250","meta":{"count":0},"pid":742902,"status":"ok","timestamp_ms":1787157278264}
+{"duration_ms":14.151937,"event":"discover_files","invocation_id":"742902-1787157278250","meta":{"globs":[]},"pid":742902,"status":"ok","timestamp_ms":1787157278264}
+{"duration_ms":14.393210999999999,"event":"command_finish","invocation_id":"742902-1787157278250","meta":{"command":"check","exit_code":2},"pid":742902,"status":"ok","timestamp_ms":1787157278265}
+{"duration_ms":0.0,"event":"command_start","invocation_id":"747175-1787157347958","meta":{"command":"check","json_output":true},"pid":747175,"status":"ok","timestamp_ms":1787157347958}
+{"duration_ms":1.064794,"event":"startup","invocation_id":"747175-1787157347958","meta":{"command":"check"},"pid":747175,"status":"ok","timestamp_ms":1787157347958}
+{"duration_ms":0.0,"event":"discover_files_result","invocation_id":"747175-1787157347958","meta":{"count":0},"pid":747175,"status":"ok","timestamp_ms":1787157347970}
+{"duration_ms":11.96322,"event":"discover_files","invocation_id":"747175-1787157347958","meta":{"globs":[]},"pid":747175,"status":"ok","timestamp_ms":1787157347971}
+{"duration_ms":12.17584,"event":"command_finish","invocation_id":"747175-1787157347958","meta":{"command":"check","exit_code":2},"pid":747175,"status":"ok","timestamp_ms":1787157347971}

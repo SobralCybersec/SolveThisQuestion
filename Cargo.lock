@@ -3839,6 +3839,8 @@ dependencies = [
  "axum",
  "futures-util",
  "glib",
+ "image",
+ "libwayshot-xcap",
  "notify-rust",
  "reqwest 0.12.28",
  "serde",

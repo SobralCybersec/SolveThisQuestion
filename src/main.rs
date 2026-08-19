@@ -154,7 +154,7 @@ fn prompt_with_short_answer(prompt: String) -> String {
 }
 
 fn default_screen_prompt() -> String {
-    "Read the uploaded desktop screenshot and find every question, problem, or exercise in it. Solve each one and actually work it out: read the given values, do the calculations or reasoning step by step, and reach a correct result — never guess or leave a question unanswered. Preserve the visible numbering (Q.1, Q.2, and Q.1.a) for subparts). Use only text that is actually readable in the image; do not invent missing text, and if part of a problem is unreadable, say so for that item. Do not describe the browser, the page layout, or the screenshot itself — spend the output on solving. If no question is present, give one concise, useful answer about the visible content. After your working, end with exactly one final line: Short Answer: the concise result for each item (for example Q.1) 42, Q.2) yes). Do not repeat the label or wrap the answer in quotation marks.".to_owned()
+    "Read the uploaded desktop screenshot and find every question, problem, or exercise in it. Solve each one and actually work it out: read the given values, do the calculations or reasoning step by step, and reach a correct result — never guess or leave a question unanswered. Preserve the visible numbering (Q.1, Q.2, and Q.1.a) for subparts). Use only text that is actually readable in the image; do not invent missing text, and if part of a problem is unreadable, say so for that item. Do not describe the browser, the page layout, or the screenshot itself — spend the output on solving. If the screenshot is a coding or programming task (code editor, function stub, algorithm prompt, LeetCode problem, failing test, or similar), first identify the programming language actually shown on screen — infer it from the visible syntax, the file name or extension, the editor, or the problem statement — then write the COMPLETE solution in that exact same language: the full code, ready to paste in and run. Do not abbreviate, summarize, omit imports or boilerplate, or leave placeholders, TODOs, or '...' — output the whole program or function. For a coding task the delivered answer must be the code itself, so keep any explanation to at most one short line, then end with the single line 'Short Answer:' immediately followed by the entire finished code in the detected language, written as raw code with no markdown code fences or backticks and nothing after it. If no question is present, give one concise, useful answer about the visible content. Otherwise end with exactly one final line: Short Answer: the concise result for each item (for example Q.1) 42, Q.2) yes). Do not repeat the label or wrap the answer in quotation marks.".to_owned()
 }
 
 fn short_answer(answer: &str) -> String {
@@ -315,7 +315,13 @@ fn suppress_ayatana_deprecation_warning() {}
 fn main() {
     configure_linux_display();
     suppress_ayatana_deprecation_warning();
-    tracing_subscriber::fmt::init();
+    // libwayshot logs "Ignoring a wl_output with version < 4" at ERROR for every
+    // non-output global in the registry — false alarms that flood the log while
+    // capture works fine. Mute that crate; keep everything else (and RUST_LOG).
+    let log_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"))
+        .add_directive("libwayshot_xcap=off".parse().expect("valid log directive"));
+    tracing_subscriber::fmt().with_env_filter(log_filter).init();
 
     tauri::Builder::default()
         .plugin(
@@ -798,30 +804,51 @@ fn trigger_desktop_capture(app: tauri::AppHandle) {
     });
 }
 
+// Silent wlroots capture: talks zwlr_screencopy straight to the compositor
+// over the Wayland socket. No D-Bus, no PipeWire node, no shutter, no child
+// process — nothing a capture-detector hooks. Errors if the compositor lacks
+// the protocol (e.g. GNOME/KDE), letting the caller fall back to xcap.
+#[cfg(target_os = "linux")]
+fn wlr_capture(path: &std::path::Path) -> Result<serde_json::Value> {
+    use libwayshot_xcap::WayshotConnection;
+    let conn = WayshotConnection::new().context("wayland screencopy connect")?;
+    let cap = conn
+        .screenshot_all(false)
+        .context("wlr-screencopy capture")?
+        .to_rgba8();
+    let (width, height) = (cap.width(), cap.height());
+    // Re-wrap in our image 0.25 buffer (has the PNG encoder libwayshot's lacks).
+    let rgba = image::RgbaImage::from_raw(width, height, cap.into_raw())
+        .context("rebuild rgba buffer")?;
+    rgba.save(path).context("write desktop screenshot")?;
+    Ok(serde_json::json!({
+        "width": width,
+        "height": height,
+        "device_pixel_ratio": 1,
+        "backend": "wlr-screencopy",
+    }))
+}
+
 async fn capture_desktop(state: &AppState, run_id: Uuid) -> Result<serde_json::Value> {
     let screenshot_path = state.runtime.join("captures").join(format!("{run_id}.png"));
     let screenshot_url = format!("/captures/{run_id}.png");
     let path = screenshot_path.clone();
     let viewport = tokio::task::spawn_blocking(move || -> Result<serde_json::Value> {
-        let monitors = match Monitor::all() {
-            Ok(monitors) => monitors,
-            Err(error) => {
-                #[cfg(target_os = "linux")]
-                if StdCommand::new("grim")
-                    .arg(&path)
-                    .status()
-                    .is_ok_and(|status| status.success())
-                {
-                    return Ok(serde_json::json!({
-                        "width": 0,
-                        "height": 0,
-                        "device_pixel_ratio": 1,
-                        "backend": "grim",
-                    }));
-                }
-                return Err(anyhow::anyhow!("enumerate monitors: {error}"));
+        // Wayland: go straight to wlr-screencopy (compositor-direct, no D-Bus,
+        // no shutter flash/sound, no named helper process). xcap's Wayland path
+        // probes org.gnome.Shell.Screenshot and the portal Screenshot interface
+        // over D-Bus first — exactly what capture-detectors watch — before it
+        // reaches the silent wlroots backend. Bypass all that.
+        #[cfg(target_os = "linux")]
+        if env::var_os("WAYLAND_DISPLAY").is_some() {
+            match wlr_capture(&path) {
+                Ok(viewport) => return Ok(viewport),
+                // Only fall through if the silent path genuinely failed (e.g.
+                // compositor without zwlr_screencopy). xcap is the loud path.
+                Err(error) => tracing::debug!(%error, "wlr-screencopy unavailable, falling back"),
             }
-        };
+        }
+        let monitors = Monitor::all().context("enumerate monitors")?;
         let primary = monitors
             .iter()
             .find(|monitor| monitor.is_primary().unwrap_or(false))

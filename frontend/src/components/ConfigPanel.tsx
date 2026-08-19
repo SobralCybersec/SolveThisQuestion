@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useState } from "react";
-import { Button, Input, Select } from "./ui";
+import { Button, Input, Label, Select, Switch } from "./ui";
 import { API_BASE } from "../lib/api";
 
 type Config = {
@@ -173,18 +173,18 @@ export function ConfigPanel({ open, onClose }: Props) {
         {!config.url && <span><i className={loginReady ? "health-dot is-on" : "health-dot"} /> {loginReady ? "ChatGPT linked" : "login required"}</span>}
       </div>
       <form onSubmit={save}>
-        <label>External Hub URL<Input value={config.url} onChange={(event) => update("url", event.target.value)} placeholder="Blank = embedded bridge" /></label>
-        <label>API key<Input type="password" value={apiKey} onChange={(event) => { setApiKey(event.target.value); setClearKey(false); }} placeholder={config.api_key_configured ? "Saved key · enter to replace" : "Optional for loopback Hub"} autoComplete="off" /></label>
+        <Label>External Hub URL<Input value={config.url} onChange={(event) => update("url", event.target.value)} placeholder="Blank = embedded bridge" /></Label>
+        <Label>API key<Input type="password" value={apiKey} onChange={(event) => { setApiKey(event.target.value); setClearKey(false); }} placeholder={config.api_key_configured ? "Saved key · enter to replace" : "Optional for loopback Hub"} autoComplete="off" /></Label>
         {config.api_key_configured && <button className="link-button" type="button" onClick={() => { setClearKey(true); setApiKey(""); }}>Clear saved key</button>}
-        <label>Model<Input value={config.model} onChange={(event) => update("model", event.target.value)} placeholder="chatgpt:chatgpt-web-session" /></label>
+        <Label>Model<Input value={config.model} onChange={(event) => update("model", event.target.value)} placeholder="chatgpt:chatgpt-web-session" /></Label>
         <div className="settings-row">
-          <label>ChatGPT mode<Select value={config.chatgpt_mode} onChange={(event) => update("chatgpt_mode", event.target.value as Config["chatgpt_mode"])}><option value="web">web session</option><option value="auto">auto</option></Select></label>
-          <label>Session ID<Input value={config.session_id} onChange={(event) => update("session_id", event.target.value)} placeholder="screen-agent" /></label>
+          <Label>ChatGPT mode<Select value={config.chatgpt_mode} onValueChange={(value) => update("chatgpt_mode", value as Config["chatgpt_mode"])} options={[{ value: "web", label: "web session" }, { value: "auto", label: "auto" }]} /></Label>
+          <Label>Session ID<Input value={config.session_id} onChange={(event) => update("session_id", event.target.value)} placeholder="screen-agent" /></Label>
         </div>
-        <label className="check-row"><input type="checkbox" checked={config.chatgpt_think} onChange={(event) => update("chatgpt_think", event.target.checked)} /><span>Think mode — deeper reasoning on desktop captures (slower)</span></label>
-        <label>Desktop screenshot keybind<Input value={config.hotkey} onChange={(event) => update("hotkey", event.target.value)} placeholder="CommandOrControl+Shift+S" /></label>
-        <label className="check-row"><input type="checkbox" checked={config.imglink_upload} onChange={(event) => update("imglink_upload", event.target.checked)} /><span>Upload screenshots to ImgLink</span></label>
-        <label>ImgLink API key<Input type="password" value={imglinkKey} onChange={(event) => { setImgLinkKey(event.target.value); setClearImgLinkKey(false); }} placeholder={config.imglink_api_key_configured ? "Saved key · enter to replace" : "Required when upload is enabled"} autoComplete="off" /></label>
+        <div className="switch-row"><span>Think mode — deeper reasoning on desktop captures (slower)</span><Switch checked={config.chatgpt_think} onCheckedChange={(value) => update("chatgpt_think", value)} /></div>
+        <Label>Desktop screenshot keybind<Input value={config.hotkey} onChange={(event) => update("hotkey", event.target.value)} placeholder="CommandOrControl+Shift+S" /></Label>
+        <div className="switch-row"><span>Upload screenshots to ImgLink</span><Switch checked={config.imglink_upload} onCheckedChange={(value) => update("imglink_upload", value)} /></div>
+        <Label>ImgLink API key<Input type="password" value={imglinkKey} onChange={(event) => { setImgLinkKey(event.target.value); setClearImgLinkKey(false); }} placeholder={config.imglink_api_key_configured ? "Saved key · enter to replace" : "Required when upload is enabled"} autoComplete="off" /></Label>
         {config.imglink_api_key_configured && <button className="link-button" type="button" onClick={() => { setClearImgLinkKey(true); setImgLinkKey(""); }}>Clear ImgLink key</button>}
         <Button type="submit" disabled={busy}>{busy ? "Saving…" : "Save proxy config"}<b>↗</b></Button>
       </form>

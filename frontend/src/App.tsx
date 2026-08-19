@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { ConfigPanel } from "./components/ConfigPanel";
-import { Badge, Button, Card, Input, Textarea } from "./components/ui";
+import { Badge, Button, Card, GptIcon, Input, Label, Switch, Textarea } from "./components/ui";
 import { API_BASE } from "./lib/api";
 
 type RunState = "ready" | "capturing" | "answer" | "error";
@@ -58,26 +58,20 @@ export default function App() {
   }
 
   return <main className="shell">
-    <aside className="rail">
-      <div className="mark"><span>◒</span> GLINT</div>
-      <div className="rail-copy"><span className="eyebrow">LOCAL AGENT</span><p>One page.<br />One clear answer.</p></div>
-      <div className="rail-bottom"><div className="signal"><span className="signal-dot" /> bridge online</div><span className="version">v0.1 / SSE</span></div>
-    </aside>
     <section className="workspace">
-      <header className="topbar"><div><span className="eyebrow">SCREEN READER</span><h1>Ask what matters.</h1></div><div className="topbar-actions"><button className="settings-trigger" type="button" onClick={() => setSettingsOpen(true)}><span>⌘</span> CONFIG</button><Badge tone={state === "ready" ? "neutral" : "live"}>{statusLabel}</Badge></div></header>
+      <header className="topbar"><div className="brand"><span className="mark"><GptIcon /></span><h1>Ask what matters.</h1></div><div className="topbar-actions"><button className="settings-trigger" type="button" onClick={() => setSettingsOpen(true)}>Config</button><Badge tone={state === "ready" ? "neutral" : "live"}>{statusLabel}</Badge></div></header>
       <div className="grid">
         <Card className="run-card">
-          <div className="card-head"><div><span className="eyebrow">01 / CAPTURE</span><h2>Point agent at a page</h2></div><span className="keycap">⌘ ↵</span></div>
+          <div className="card-head"><h2>Capture</h2></div>
           <form onSubmit={submit}>
-            <label>Page URL<Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://…" /></label>
-            <label>Question for the agent<Textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={5} /></label>
-            <label className="check-row"><input type="checkbox" checked={webSearch} onChange={(e) => setWebSearch(e.target.checked)} /><span>Search web for current context</span></label>
+            <Label>Page URL<Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://…" /></Label>
+            <Label>Question for the agent<Textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={5} /></Label>
+            <div className="switch-row"><span>Search web for current context</span><Switch checked={webSearch} onCheckedChange={setWebSearch} /></div>
             <Button type="submit" disabled={state === "capturing"}><span>{state === "capturing" ? "Reading page…" : "Read screen"}</span><b>↗</b></Button>
           </form>
-          <p className="hint">Playwright captures a fresh viewport and page text, then sends both to your configured GPT proxy.</p>
         </Card>
         <Card className="answer-card">
-          <div className="card-head"><div><span className="eyebrow">02 / ANSWER</span><h2>Signal, not noise</h2></div><span className="answer-glyph">✦</span></div>
+          <div className="card-head"><h2>Answer</h2></div>
           {state === "answer" ? <div className="answer-body">
             {capture.screenshot && <img className="capture-preview" src={`${API_BASE}${capture.screenshot}`} alt={`Screenshot of ${capture.title || "captured page"}`} />}
             <p>{answer}</p>
@@ -89,7 +83,6 @@ export default function App() {
           </div> : <div className="empty"><div className="empty-ring">✦</div><p>{state === "capturing" ? "Reading viewport and page text…" : state === "error" ? error : "Your answer will land here."}</p><span>{state === "error" ? "Check bridge, proxy, and target URL." : "Run agent to start a fresh capture."}</span></div>}
         </Card>
       </div>
-      <footer className="footer"><span><i className="footer-dot" /> Linux + Windows notifications</span><span>Playwright bridge · local-only API · no stored prompts</span></footer>
       <ConfigPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </section>
   </main>;
