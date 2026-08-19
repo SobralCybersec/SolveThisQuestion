@@ -18,10 +18,10 @@ use std::{
     process::Command as StdCommand,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, Mutex as StdMutex,
     },
 };
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 use tokio::{
     fs::OpenOptions,
@@ -50,6 +50,7 @@ struct AppState {
     // while alive, so login and config changes tear it down first.
     agent_bridge: Arc<Mutex<Option<BridgeProcess>>>,
     capture_busy: Arc<AtomicBool>,
+    overlay_payload: Arc<StdMutex<Option<OverlayPayload>>>,
 }
 
 struct BridgeProcess {
@@ -95,6 +96,12 @@ struct AgentEvent {
     data: serde_json::Value,
 }
 
+#[derive(Clone, Debug, Serialize)]
+struct OverlayPayload {
+    code: String,
+    language: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct RunRequest {
     prompt: String,
@@ -122,6 +129,15 @@ struct ProxyConfig {
     hotkey: String,
     imglink_upload: bool,
     imglink_api_key: Option<String>,
+    // How a coding answer is delivered: "notify" (desktop notification, default),
+    // "overlay" (capture-hidden window on Win/macOS; visible on Linux), or
+    // "type" (auto-type into the focused editor — no paste event, Wayland-safe).
+    #[serde(default = "default_code_delivery")]
+    code_delivery: String,
+}
+
+fn default_code_delivery() -> String {
+    "notify".to_owned()
 }
 
 #[derive(Debug, Deserialize)]
@@ -137,6 +153,7 @@ struct ConfigUpdate {
     imglink_upload: Option<bool>,
     imglink_api_key: Option<String>,
     clear_imglink_api_key: Option<bool>,
+    code_delivery: Option<String>,
 }
 
 fn default_url() -> String {
@@ -154,13 +171,16 @@ fn prompt_with_short_answer(prompt: String) -> String {
 }
 
 fn default_screen_prompt() -> String {
-    "Read the uploaded desktop screenshot and find every question, problem, or exercise in it. Solve each one and actually work it out: read the given values, do the calculations or reasoning step by step, and reach a correct result — never guess or leave a question unanswered. Preserve the visible numbering (Q.1, Q.2, and Q.1.a) for subparts). Use only text that is actually readable in the image; do not invent missing text, and if part of a problem is unreadable, say so for that item. Do not describe the browser, the page layout, or the screenshot itself — spend the output on solving. If the screenshot is a coding or programming task (code editor, function stub, algorithm prompt, LeetCode problem, failing test, or similar), first identify the programming language actually shown on screen — infer it from the visible syntax, the file name or extension, the editor, or the problem statement — then write the COMPLETE solution in that exact same language: the full code, ready to paste in and run. Do not abbreviate, summarize, omit imports or boilerplate, or leave placeholders, TODOs, or '...' — output the whole program or function. For a coding task the delivered answer must be the code itself, so keep any explanation to at most one short line, then end with the single line 'Short Answer:' immediately followed by the entire finished code in the detected language, written as raw code with no markdown code fences or backticks and nothing after it. If no question is present, give one concise, useful answer about the visible content. Otherwise end with exactly one final line: Short Answer: the concise result for each item (for example Q.1) 42, Q.2) yes). Do not repeat the label or wrap the answer in quotation marks.".to_owned()
+    "Read the uploaded desktop screenshot and find every question, problem, or exercise in it. Solve each one and actually work it out: read the given values, do the calculations or reasoning step by step, and reach a correct result — never guess or leave a question unanswered. Preserve the visible numbering (Q.1, Q.2, and Q.1.a) for subparts). Use only text that is actually readable in the image; do not invent missing text, and if part of a problem is unreadable, say so for that item. Do not describe the browser, the page layout, or the screenshot itself — spend the output on solving. If the screenshot is a coding or programming task (code editor, function stub, algorithm prompt, LeetCode problem, failing test, or similar), first identify the programming language actually shown on screen — infer it from the visible syntax, the file name or extension, the editor, or the problem statement — then write the COMPLETE solution in that exact same language: the full code, ready to paste in and run. Do not abbreviate, summarize, omit imports or boilerplate, or leave placeholders, TODOs, or '...' — output the whole program or function. For a coding task the delivered answer must be the code itself, so keep any explanation to at most one short line, then end with the single line 'Short Answer:' and, on the very next line, 'LANG: ' followed by the detected language name (for example 'LANG: C++'), and on the line after that the entire finished code in that language, written as raw code with no markdown code fences or backticks and nothing after it. If no question is present, give one concise, useful answer about the visible content. Otherwise end with exactly one final line: Short Answer: the concise result for each item (for example Q.1) 42, Q.2) yes). Do not repeat the label or wrap the answer in quotation marks.".to_owned()
 }
 
 fn short_answer(answer: &str) -> String {
-    let value = answer
-        .rsplit_once("Short Answer:")
-        .map(|(_, value)| value.trim())
+    let marker = answer
+        .to_ascii_lowercase()
+        .rfind("short answer:")
+        .map(|index| index + "Short Answer:".len());
+    let value = marker
+        .map(|index| answer[index..].trim())
         .filter(|value| !value.is_empty())
         // No "Short Answer:" marker: return the whole answer, not just its first
         // line — cropping to one line dropped the rest in the notification.
@@ -369,6 +389,7 @@ fn main() {
                 let _ = window.hide();
             }
         })
+        .invoke_handler(tauri::generate_handler![take_overlay_payload])
         .run(tauri::generate_context!())
         .expect("error while running Screen Agent");
 }
@@ -396,6 +417,7 @@ async fn run_server(app: tauri::AppHandle, bridge: PathBuf, runtime: PathBuf) ->
         login_bridge: Arc::new(Mutex::new(None)),
         agent_bridge: Arc::new(Mutex::new(None)),
         capture_busy: Arc::new(AtomicBool::new(false)),
+        overlay_payload: Arc::new(StdMutex::new(None)),
     });
     app.manage(Arc::clone(&state));
     register_hotkey(&app, &config.hotkey, port)?;
@@ -444,6 +466,9 @@ fn proxy_config_from_env() -> ProxyConfig {
             .map(|value| matches!(value.as_str(), "1" | "true" | "yes" | "on"))
             .unwrap_or(false),
         imglink_api_key: env_value(&["SCREEN_AGENT_IMGLINK_API_KEY", "IMGLINK_API_KEY"]),
+        code_delivery: env_value(&["SCREEN_AGENT_CODE_DELIVERY"])
+            .filter(|value| matches!(value.as_str(), "notify" | "overlay" | "type"))
+            .unwrap_or_else(default_code_delivery),
     }
 }
 
@@ -632,6 +657,11 @@ async fn update_config(
     if let Some(enabled) = update.imglink_upload {
         config.imglink_upload = enabled;
     }
+    if let Some(mode) = update.code_delivery {
+        if matches!(mode.as_str(), "notify" | "overlay" | "type") {
+            config.code_delivery = mode;
+        }
+    }
     if update.clear_imglink_api_key.unwrap_or(false) {
         config.imglink_api_key = None;
     } else if let Some(api_key) = update
@@ -667,6 +697,7 @@ fn public_config(config: &ProxyConfig) -> serde_json::Value {
         "hotkey_backend": if wayland_hyprland() { "hyprland" } else { "tauri" },
         "imglink_upload": config.imglink_upload,
         "imglink_api_key_configured": config.imglink_api_key.is_some(),
+        "code_delivery": config.code_delivery,
     })
 }
 
@@ -743,6 +774,136 @@ async fn run_agent(
     }
 }
 
+// A coding answer arrives as "LANG: <language>\n<raw code>" (see the screen
+// prompt). Pull the language and the code out; None for a normal prose answer.
+fn parse_code_answer(short: &str) -> Option<(String, String)> {
+    // The model may wrap the requested raw block in quotes, markdown emphasis,
+    // or a code fence despite the prompt. Find header after the short-answer
+    // marker instead of requiring it to be byte 0.
+    let short = short.trim();
+    let lang_start = short
+        .find("LANG:")
+        .or_else(|| short.find("lang:"))?;
+    let rest = &short[lang_start + "LANG:".len()..];
+    let (lang_line, code) = rest.split_once('\n')?;
+    let code = code
+        .trim()
+        .trim_matches(|character| matches!(character, '"' | '\'' | '`'))
+        .trim();
+    if code.trim().is_empty() {
+        return None;
+    }
+    Some((lang_line.trim().to_owned(), code.to_owned()))
+}
+
+// Type text into the focused window as real keystrokes — no clipboard, no paste
+// event. wtype uses the wlroots virtual-keyboard protocol (Wayland, no root);
+// ydotool uses kernel uinput (needs ydotoold, also covers X11).
+// ponytail: fixed inter-key delay (SCREEN_AGENT_TYPE_DELAY_MS); add randomized
+// jitter here if keystroke-dynamics detection becomes a concern.
+#[cfg(target_os = "linux")]
+fn auto_type(text: &str, clear_first: bool) -> Result<()> {
+    let delay = env::var("SCREEN_AGENT_TYPE_DELAY_MS")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(12)
+        .to_string();
+    // wtype first.
+    if clear_first {
+        let _ = StdCommand::new("wtype")
+            .args(["-M", "ctrl", "a", "-m", "ctrl"])
+            .status();
+        let _ = StdCommand::new("wtype").args(["-k", "Delete"]).status();
+    }
+    if StdCommand::new("wtype")
+        .args(["-d", &delay, "--", text])
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+    // ydotool fallback (key codes: ctrl=29, a=30, delete=111).
+    if clear_first {
+        let _ = StdCommand::new("ydotool")
+            .args(["key", "29:1", "30:1", "30:0", "29:0"])
+            .status();
+        let _ = StdCommand::new("ydotool").args(["key", "111:1", "111:0"]).status();
+    }
+    if StdCommand::new("ydotool")
+        .args(["type", "--key-delay", &delay, "--", text])
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+    Err(anyhow::anyhow!(
+        "no auto-typer available — install wtype (Wayland) or ydotool"
+    ))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn auto_type(_text: &str, _clear_first: bool) -> Result<()> {
+    Err(anyhow::anyhow!("auto-type is only implemented on Linux"))
+}
+
+// Show the code in a frameless always-on-top window. set_content_protected hides
+// it from screen capture on Windows/macOS; on Linux it is a no-op (Wayland has no
+// per-window capture exclusion), so the window is visible in recordings there.
+#[tauri::command]
+fn take_overlay_payload(state: tauri::State<'_, Arc<AppState>>) -> Option<OverlayPayload> {
+    state.overlay_payload.lock().ok()?.take()
+}
+
+async fn show_overlay(state: &AppState, code: &str, language: &str) {
+    let payload = OverlayPayload {
+        code: code.to_owned(),
+        language: language.to_owned(),
+    };
+    // Store before creating the window. The overlay consumes this after its
+    // React tree mounts, so delivery does not depend on event-listener timing.
+    if let Ok(mut pending) = state.overlay_payload.lock() {
+        *pending = Some(payload.clone());
+    } else {
+        tracing::error!("overlay payload lock poisoned");
+        return;
+    }
+
+    if let Some(window) = state.app.get_webview_window("overlay") {
+        let _ = window.emit("overlay.code", &payload);
+        let _ = window.set_ignore_cursor_events(true);
+        let _ = window.set_focusable(false);
+        let _ = window.show();
+        return;
+    }
+    let url = tauri::WebviewUrl::App("index.html?overlay=1".into());
+    match tauri::WebviewWindowBuilder::new(&state.app, "overlay", url)
+        .title("Screen Agent Overlay")
+        .inner_size(600.0, 440.0)
+        .always_on_top(true)
+        .decorations(false)
+        .focusable(false)
+        .skip_taskbar(true)
+        .build()
+    {
+        Ok(window) => {
+            let _ = window.set_content_protected(true);
+            let _ = window.set_ignore_cursor_events(true);
+            let _ = window.show();
+        }
+        Err(error) => tracing::error!(%error, "overlay window build failed"),
+    }
+}
+
+async fn notify(summary: &str, body: String) {
+    let summary = summary.to_owned();
+    let _ = tokio::task::spawn_blocking(move || {
+        Notification::new().summary(&summary).body(&body).show()
+    })
+    .await;
+}
+
 async fn publish_success(state: &AppState, run_id: Uuid, output: serde_json::Value) {
     let _ = state.events.send(AgentEvent {
         event: "capture.ready".to_owned(),
@@ -764,19 +925,50 @@ async fn publish_success(state: &AppState, run_id: Uuid, output: serde_json::Val
         .get("answer")
         .and_then(serde_json::Value::as_str)
         .unwrap_or("No answer returned.");
-    let short_answer = short_answer(answer);
+    let short = short_answer(answer);
+    let code = parse_code_answer(&short);
     let _ = state.events.send(AgentEvent {
         event: "answer.ready".to_owned(),
-        data: serde_json::json!({ "run_id": run_id, "answer": answer, "short_answer": short_answer }),
+        data: serde_json::json!({
+            "run_id": run_id,
+            "answer": answer,
+            "short_answer": short,
+            "code": code.as_ref().map(|(_, code)| code),
+            "language": code.as_ref().map(|(language, _)| language),
+        }),
     });
-    let body = short_answer;
-    let _ = tokio::task::spawn_blocking(move || {
-        Notification::new()
-            .summary("Screen Agent answer")
-            .body(&body)
-            .show()
-    })
-    .await;
+
+    // Route coding answers by the configured delivery mode; prose just notifies.
+    let mode = state.proxy.read().await.code_delivery.clone();
+    if let Some((language, code_text)) = code {
+        match mode.as_str() {
+            "type" => {
+                let clear_first = env_bool("SCREEN_AGENT_TYPE_CLEAR_FIRST", true);
+                let typed = code_text.clone();
+                let result =
+                    tokio::task::spawn_blocking(move || auto_type(&typed, clear_first)).await;
+                match result {
+                    Ok(Ok(())) => notify("Screen Agent", format!("Auto-typed {language} solution")).await,
+                    _ => notify(
+                        "Screen Agent — auto-type unavailable",
+                        "Install wtype (Wayland) or ydotool. Answer is in the app.".to_owned(),
+                    )
+                    .await,
+                }
+                return;
+            }
+            "overlay" => {
+                show_overlay(state, &code_text, &language).await;
+                return;
+            }
+            _ => {
+                // notify mode: show the code itself (LANG line already stripped).
+                notify("Screen Agent answer", code_text).await;
+                return;
+            }
+        }
+    }
+    notify("Screen Agent answer", short).await;
 }
 
 fn trigger_desktop_capture(app: tauri::AppHandle) {
@@ -1265,9 +1457,48 @@ fn env_bool(name: &str, fallback: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        acquire_bridge_process_lock, default_screen_prompt, load_saved_config,
+        acquire_bridge_process_lock, default_screen_prompt, load_saved_config, parse_code_answer,
         prompt_with_short_answer, save_config, short_answer, ProxyConfig,
     };
+
+    #[test]
+    fn parse_code_answer_splits_lang_and_code() {
+        let (lang, code) =
+            parse_code_answer("LANG: C++\n#include <vector>\nint main() { return 0; }")
+                .expect("code answer");
+        assert_eq!(lang, "C++");
+        assert!(code.starts_with("#include <vector>"));
+        assert!(code.ends_with("return 0; }"));
+        // Prose (no LANG: sentinel) is not a code answer.
+        assert!(parse_code_answer("42 months").is_none());
+        // LANG: with no code body is not a code answer.
+        assert!(parse_code_answer("LANG: Python\n   ").is_none());
+
+        let (lang, code) = parse_code_answer(&short_answer(
+            "Explanation\n\nShort Answer:\nLANG: Java\nimport java.util.HashMap;\nclass Solution { public int[] twoSum(int[] nums, int target) { return new int[0]; } }",
+        ))
+        .expect("Java short answer");
+        assert_eq!(lang, "Java");
+        assert!(code.contains("class Solution"));
+
+        let quoted_answer = r#""Java solution using a HashMap.
+
+Short Answer:
+LANG: Java
+import java.util.HashMap;
+import java.util.Map;
+
+class Solution {
+    public int[] twoSum(int[] nums, int target) {
+        Map<Integer, Integer> seen = new HashMap<>();
+        return new int[0];
+    }
+}""#;
+        let (lang, code) = parse_code_answer(&short_answer(quoted_answer))
+            .expect("quoted Java answer");
+        assert_eq!(lang, "Java");
+        assert!(code.contains("import java.util.Map;"));
+    }
 
     #[test]
     fn short_answer_instruction_and_parser_work() {
@@ -1301,6 +1532,7 @@ mod tests {
             hotkey: "CommandOrControl+Shift+S".to_owned(),
             imglink_upload: true,
             imglink_api_key: Some("imglink-secret".to_owned()),
+            code_delivery: "notify".to_owned(),
         };
         save_config(&path, &config).await.expect("save config");
         assert_eq!(

@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/linux-schema.json",
+  "identifier": "default",
+  "description": "Overlay window receives code answers via Tauri events.",
+  "windows": ["main", "overlay"],
+  "permissions": [
+    "core:default",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "core:window:allow-start-dragging"
+  ]
+}

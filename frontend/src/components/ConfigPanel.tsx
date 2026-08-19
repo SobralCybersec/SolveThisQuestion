@@ -12,6 +12,7 @@ type Config = {
   imglink_upload: boolean;
   imglink_api_key_configured: boolean;
   api_key_configured: boolean;
+  code_delivery: "notify" | "overlay" | "type";
   mode?: "embedded" | "external";
 };
 
@@ -30,6 +31,7 @@ const fallback: Config = {
   imglink_upload: false,
   imglink_api_key_configured: false,
   api_key_configured: false,
+  code_delivery: "notify",
   mode: "embedded",
 };
 
@@ -102,6 +104,7 @@ export function ConfigPanel({ open, onClose }: Props) {
           session_id: config.session_id,
           hotkey: config.hotkey,
           imglink_upload: config.imglink_upload,
+          code_delivery: config.code_delivery,
           ...(imglinkKey ? { imglink_api_key: imglinkKey } : {}),
           ...(clearImgLinkKey ? { clear_imglink_api_key: true } : {}),
           ...(apiKey ? { api_key: apiKey } : {}),
@@ -182,6 +185,7 @@ export function ConfigPanel({ open, onClose }: Props) {
           <Label>Session ID<Input value={config.session_id} onChange={(event) => update("session_id", event.target.value)} placeholder="screen-agent" /></Label>
         </div>
         <div className="switch-row"><span>Think mode — deeper reasoning on desktop captures (slower)</span><Switch checked={config.chatgpt_think} onCheckedChange={(value) => update("chatgpt_think", value)} /></div>
+        <Label>Coding answer delivery<Select value={config.code_delivery} onValueChange={(value) => update("code_delivery", value as Config["code_delivery"])} options={[{ value: "notify", label: "notification" }, { value: "type", label: "auto-type into editor" }, { value: "overlay", label: "overlay window" }]} /></Label>
         <Label>Desktop screenshot keybind<Input value={config.hotkey} onChange={(event) => update("hotkey", event.target.value)} placeholder="CommandOrControl+Shift+S" /></Label>
         <div className="switch-row"><span>Upload screenshots to ImgLink</span><Switch checked={config.imglink_upload} onCheckedChange={(value) => update("imglink_upload", value)} /></div>
         <Label>ImgLink API key<Input type="password" value={imglinkKey} onChange={(event) => { setImgLinkKey(event.target.value); setClearImgLinkKey(false); }} placeholder={config.imglink_api_key_configured ? "Saved key · enter to replace" : "Required when upload is enabled"} autoComplete="off" /></Label>

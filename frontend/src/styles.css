@@ -104,3 +104,11 @@ label { display: block; color: #9a9a9a; font: 11px 'DM Mono', monospace; margin-
   .settings-panel { padding: 26px 20px; }
   .settings-row { grid-template-columns: 1fr; gap: 0; }
 }
+
+/* Code overlay window (frameless, always-on-top). */
+.overlay { display: flex; flex-direction: column; height: 100vh; background: #000; border: 1px solid #222; border-radius: 10px; overflow: hidden; }
+.overlay-bar { display: flex; align-items: center; justify-content: space-between; padding: 7px 12px; background: #0a0a0a; border-bottom: 1px solid #1a1a1a; cursor: default; user-select: none; }
+.overlay-lang { color: #fff; font: 600 11px 'DM Mono', monospace; letter-spacing: .06em; text-transform: lowercase; }
+.overlay-hint { color: #5f5f5f; font: 10px 'DM Mono', monospace; }
+.overlay-code { flex: 1 1 0; min-width: 0; min-height: 0; margin: 0; padding: 14px 16px; overflow: auto; scrollbar-width: none; color: #ededed; font: 13px/1.5 'DM Mono', monospace; white-space: pre; tab-size: 4; }
+.overlay-code::-webkit-scrollbar { display: none; }

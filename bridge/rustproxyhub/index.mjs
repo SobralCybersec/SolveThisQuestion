@@ -125,6 +125,48 @@ function removeStaleChromiumProfileLock(profileDir) {
   return true
 }
 
+function chromiumProcessesUsingProfile(profileDir) {
+  if (process.platform === 'win32') return []
+  let output
+  try {
+    output = execFileSync('ps', ['-eo', 'pid=,args='], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      maxBuffer: 2 * 1024 * 1024,
+    })
+  } catch {
+    return []
+  }
+  const expected = path.resolve(profileDir)
+  const pids = []
+  for (const line of output.split('\n')) {
+    const match = line.match(/^\s*(\d+)\s+(.*)$/)
+    if (!match) continue
+    const pid = Number(match[1])
+    if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) continue
+    const userData = match[2].match(/(?:^|\s)--user-data-dir=(?:"([^"]+)"|'([^']+)'|(\S+))/)
+    if (!userData) continue
+    if (path.resolve(userData[1] || userData[2] || userData[3]) === expected) pids.push(pid)
+  }
+  return pids
+}
+
+async function closeChromiumProfileInstances(profileDir) {
+  let pids = chromiumProcessesUsingProfile(profileDir)
+  for (const pid of pids) {
+    try { process.kill(pid, 'SIGTERM') } catch {}
+  }
+  const deadline = Date.now() + 2500
+  while (pids.length && Date.now() < deadline) {
+    await sleep(100)
+    pids = chromiumProcessesUsingProfile(profileDir)
+  }
+  for (const pid of pids) {
+    try { process.kill(pid, 'SIGKILL') } catch {}
+  }
+  return pids.length === 0
+}
+
 function isProfileSingletonError(error) {
   return /ProcessSingleton|SingletonLock/i.test(error instanceof Error ? error.message : String(error))
 }
@@ -569,13 +611,15 @@ async function initChatGPTOnce({ runtime_dir, headless, browser }) {
     state.chatgpt.streamEmitter = null
     state.chatgpt.browserChoice = null
   }
-  ensureDir(path.resolve('chatgpt_profile'))
+  const profileDir = path.resolve('chatgpt_profile')
+  ensureDir(profileDir)
+  await closeChromiumProfileInstances(profileDir)
+  removeStaleChromiumProfileLock(profileDir)
   let storageState
   try {
     storageState = JSON.parse(fs.readFileSync(chatGPTStorageStatePath(), 'utf8'))
   } catch {}
   const { engine, channel, executablePath } = resolveEngine(browser)
-  const profileDir = path.resolve('chatgpt_profile')
   const launchOptions = {
     headless: selectedHeadless,
     channel,
@@ -588,7 +632,9 @@ async function initChatGPTOnce({ runtime_dir, headless, browser }) {
   try {
     state.chatgpt.context = await engine.launchPersistentContext(profileDir, launchOptions)
   } catch (error) {
-    if (!isProfileSingletonError(error) || !removeStaleChromiumProfileLock(profileDir)) throw error
+    if (!isProfileSingletonError(error)) throw error
+    await closeChromiumProfileInstances(profileDir)
+    removeStaleChromiumProfileLock(profileDir)
     state.chatgpt.context = await engine.launchPersistentContext(profileDir, launchOptions)
   }
   await applyStealthScripts(state.chatgpt.context)
@@ -1441,10 +1487,15 @@ async function enableThinkMode(page) {
   return (await button.getAttribute('aria-pressed').catch(() => null)) === 'true'
 }
 
-async function chatChatGPTWithImage({ runtime_dir, browser, image_path, prompt, web_search = false, headless = true }) {
-  await initChatGPT({ runtime_dir, headless, browser })
-  let page = await ensureChatGPTInteractivePage({ runtime_dir, browser })
+async function startNewChat(page) {
+  // Homepage is ChatGPT's stable new-conversation entry point. Avoid relying
+  // on version-specific sidebar labels whose old composer can stay visible.
+  await page.goto('https://chatgpt.com/', { waitUntil: 'domcontentloaded' })
+  await page.locator(CHATGPT_INPUT_SELECTOR).first().waitFor({ state: 'visible', timeout: 30000 })
+  return page
+}
 
+async function sendImageAndReadAnswer(page, { image_path, prompt, web_search }) {
   const fileInput = page.locator('input[type="file"]').first()
   if (await fileInput.count() === 0) throw new Error('ChatGPT image upload control not found')
   await fileInput.setInputFiles(image_path)
@@ -1511,8 +1562,24 @@ async function chatChatGPTWithImage({ runtime_dir, browser, image_path, prompt, 
     await sleep(500)
   }
   if (!answer) answer = lastText
-  if (!answer) throw new Error('ChatGPT image response was empty')
-  return { text: answer, model: 'chatgpt-web-session', image: true, web_search }
+  return { page, answer }
+}
+
+async function chatChatGPTWithImage({ runtime_dir, browser, image_path, prompt, web_search = false, headless = true }) {
+  await initChatGPT({ runtime_dir, headless, browser })
+  let page = await ensureChatGPTInteractivePage({ runtime_dir, browser })
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (attempt > 0) {
+      bridgeDebug('chatgpt image response empty; starting a new chat and retrying image request')
+      page = await startNewChat(page)
+    }
+    const result = await sendImageAndReadAnswer(page, { image_path, prompt, web_search })
+    page = result.page
+    if (result.answer) {
+      return { text: result.answer, model: 'chatgpt-web-session', image: true, web_search }
+    }
+  }
+  throw new Error('ChatGPT image response was empty after new-chat retry')
 }
 
 async function closeAll() {

@@ -359,7 +359,9 @@ async function askEmbeddedProxy(prompt, pageState, screenshot, webSearch, imageU
     try {
       result = await proxy.call("chatgpt", "chat_image", params);
     } catch (error) {
-      process.stderr.write(`[embedded-proxy] image chat fallback: ${error instanceof Error ? error.message : String(error)}\n`);
+      const message = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`[embedded-proxy] image chat failed: ${message}\n`);
+      if (/ChatGPT image response was empty/i.test(message)) throw error;
       result = await proxy.call("chatgpt", "chat", params);
     }
     return { text: result?.text || "Embedded proxy returned an empty answer.", image: Boolean(result?.image) };
@@ -392,6 +394,9 @@ async function embeddedStatus() {
 
 async function embeddedLogin() {
   await fs.mkdir(runtime, { recursive: true });
+  // Login must own the dedicated profile from a clean browser process. This
+  // also closes any headless embedded proxy left warm by a previous capture.
+  await resetEmbeddedProxy();
   if (!activeEmbeddedProxy) {
     activeEmbeddedProxy = startEmbeddedProxy();
   }
