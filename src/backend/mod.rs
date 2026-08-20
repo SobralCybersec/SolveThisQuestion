@@ -1,5 +1,6 @@
 pub(crate) mod bridge;
 pub(crate) mod capture;
+pub(crate) mod chat;
 pub(crate) mod config;
 pub(crate) mod platform;
 pub(crate) mod server;

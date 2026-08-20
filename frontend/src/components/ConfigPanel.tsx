@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useState } from "react";
 import { Button, Input, Label, Select, Switch } from "./ui";
+import { FallbackOrder, HotkeyCapture } from "./SettingsControls";
 import { API_BASE } from "../lib/api";
 
 type Config = {
@@ -9,6 +10,7 @@ type Config = {
   chatgpt_think: boolean;
   session_id: string;
   hotkey: string;
+  chat_hotkey: string;
   imglink_upload: boolean;
   imglink_api_key_configured: boolean;
   image_upload_providers: string;
@@ -32,6 +34,7 @@ const fallback: Config = {
   chatgpt_think: false,
   session_id: "screen-agent",
   hotkey: "CommandOrControl+Shift+S",
+  chat_hotkey: "CommandOrControl+Shift+C",
   imglink_upload: false,
   imglink_api_key_configured: false,
   image_upload_providers: "catbox,imgpile,postimages,imgbb,imglink",
@@ -80,6 +83,7 @@ function buildConfigPayload(config: Config, secrets: { apiKey: string; clearKey:
     chatgpt_think: config.chatgpt_think,
     session_id: config.session_id,
     hotkey: config.hotkey,
+    chat_hotkey: config.chat_hotkey,
     imglink_upload: config.imglink_upload,
     image_upload_providers: config.image_upload_providers,
     code_delivery: config.code_delivery,
@@ -186,6 +190,31 @@ export function ConfigPanel({ open, onClose }: Props) {
     setConfig((current) => ({ ...current, [key]: value }));
   }
 
+  async function persistHotkey(field: "hotkey" | "chat_hotkey", value: string) {
+    setMessage("Saving keybind…");
+    setError("");
+    try {
+      const response = await fetch(`${API_BASE}/api/config`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ [field]: value }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Could not save keybind");
+      setConfig((current) => ({ ...current, ...payload, [field]: value }));
+      setMessage("Keybind saved.");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not save keybind");
+    }
+  }
+
+  function captureHotkey(field: "hotkey" | "chat_hotkey") {
+    return (value: string) => {
+      update(field, value);
+      void persistHotkey(field, value);
+    };
+  }
+
   const save = (event: FormEvent) => submitConfig(event, {
     config, apiKey, clearKey, imglinkKey, clearImgLinkKey,
     imgpileToken, clearImgPileToken, postimagesToken, clearPostimagesToken, imgbbKey, clearImgBbKey,
@@ -256,9 +285,10 @@ export function ConfigPanel({ open, onClose }: Props) {
         </div>
         <div className="switch-row"><span>Think mode — deeper reasoning on desktop captures (slower)</span><Switch checked={config.chatgpt_think} onCheckedChange={(value) => update("chatgpt_think", value)} /></div>
         <Label>Coding answer delivery<Select value={config.code_delivery} onValueChange={(value) => update("code_delivery", value as Config["code_delivery"])} options={[{ value: "notify", label: "notification" }, { value: "type", label: "auto-type into editor" }, { value: "overlay", label: "overlay window" }]} /></Label>
-        <Label>Desktop screenshot keybind<Input value={config.hotkey} onChange={(event) => update("hotkey", event.target.value)} placeholder="CommandOrControl+Shift+S" /></Label>
+        <Label>Desktop screenshot keybind<HotkeyCapture value={config.hotkey} onChange={captureHotkey("hotkey")} placeholder="CommandOrControl+Shift+S" /></Label>
+        <Label>Chat overlay keybind<HotkeyCapture value={config.chat_hotkey} onChange={captureHotkey("chat_hotkey")} placeholder="CommandOrControl+Shift+C" /></Label>
         <div className="switch-row"><span>Upload screenshots to image hosts</span><Switch checked={config.imglink_upload} onCheckedChange={(value) => update("imglink_upload", value)} /></div>
-        <Label>Upload fallback order<Input value={config.image_upload_providers} onChange={(event) => update("image_upload_providers", event.target.value)} placeholder="catbox,imgpile,postimages,imgbb,imglink" /></Label>
+        <Label>Upload fallback order<FallbackOrder value={config.image_upload_providers} onChange={(value) => update("image_upload_providers", value)} /></Label>
         <Label>ImgLink API key<Input type="password" value={imglinkKey} onChange={(event) => { setImgLinkKey(event.target.value); setClearImgLinkKey(false); }} placeholder={config.imglink_api_key_configured ? "Saved key · enter to replace" : "Optional"} autoComplete="off" /></Label>
         {config.imglink_api_key_configured && <button className="link-button" type="button" onClick={() => { setClearImgLinkKey(true); setImgLinkKey(""); }}>Clear ImgLink key</button>}
         <Label>ImgPile API key<Input type="password" value={imgpileToken} onChange={(event) => { setImgPileToken(event.target.value); setClearImgPileToken(false); }} placeholder={config.imgpile_api_token_configured ? "Saved key · enter to replace" : "Optional"} autoComplete="off" /></Label>

@@ -61,41 +61,87 @@ fn hyprland_hotkey(hotkey: &str) -> Result<String> {
     })
 }
 
-fn hyprland_shortcut_command(port: u16) -> String {
+fn hyprland_shortcut_command(port: u16, endpoint: &str) -> String {
     format!(
-        "curl --silent --show-error --fail --max-time 2 --request POST http://127.0.0.1:{port}/api/capture >/dev/null 2>&1"
+        "curl --silent --show-error --fail --max-time 2 --request POST http://127.0.0.1:{port}{endpoint} >/dev/null 2>&1"
     )
 }
 
-pub(crate) fn register_hotkey(app: &tauri::AppHandle, hotkey: &str, port: u16) -> Result<()> {
-    if hotkey.is_empty() {
-        return Ok(());
+struct HotkeyRoute<'a> {
+    endpoint: &'a str,
+    label: &'a str,
+}
+
+fn register_hyprland_hotkey(hotkey: &str, port: u16, endpoint: &str, label: &str) -> Result<()> {
+    tracing::info!(%hotkey, %port, %label, "registering Hyprland keybind");
+    let keys = hyprland_hotkey(hotkey)?;
+    let command = hyprland_shortcut_command(port, endpoint)
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    let bind = format!("hl.bind(\"{keys}\", hl.dsp.exec_cmd(\"{command}\"))");
+    let result = StdCommand::new("hyprctl")
+        .args(["eval", &bind])
+        .output()
+        .context("run hyprctl eval bind")?;
+    if !result.status.success() {
+        return Err(anyhow::anyhow!(
+            "Hyprland rejected {label} keybind: {}",
+            String::from_utf8_lossy(&result.stderr).trim()
+        ));
     }
-    if wayland_hyprland() {
-        tracing::info!(%hotkey, %port, "registering Hyprland screenshot keybind");
-        let keys = hyprland_hotkey(hotkey)?;
-        let command = hyprland_shortcut_command(port)
-            .replace('\\', "\\\\")
-            .replace('"', "\\\"");
-        let bind = format!("hl.bind(\"{keys}\", hl.dsp.exec_cmd(\"{command}\"))");
-        let result = StdCommand::new("hyprctl")
-            .args(["eval", &bind])
-            .output()
-            .context("run hyprctl eval bind")?;
-        if !result.status.success() {
-            return Err(anyhow::anyhow!(
-                "Hyprland rejected screenshot keybind: {}",
-                String::from_utf8_lossy(&result.stderr).trim()
-            ));
-        }
-        return Ok(());
-    }
-    tracing::info!(%hotkey, "registering Tauri screenshot keybind");
+    Ok(())
+}
+
+fn register_tauri_hotkey(app: &tauri::AppHandle, hotkey: &str, label: &str) -> Result<()> {
+    tracing::info!(%hotkey, %label, "registering Tauri keybind");
     app.global_shortcut().register(hotkey)?;
     Ok(())
 }
 
-pub(crate) fn unregister_hotkey(app: &tauri::AppHandle, hotkey: &str) -> Result<()> {
+fn register_hotkey_with_endpoint(
+    app: &tauri::AppHandle,
+    hotkey: &str,
+    port: u16,
+    route: HotkeyRoute<'_>,
+) -> Result<()> {
+    if hotkey.is_empty() {
+        return Ok(());
+    }
+    if wayland_hyprland() {
+        return register_hyprland_hotkey(hotkey, port, route.endpoint, route.label);
+    }
+    register_tauri_hotkey(app, hotkey, route.label)
+}
+
+pub(crate) fn register_hotkey(app: &tauri::AppHandle, hotkey: &str, port: u16) -> Result<()> {
+    register_hotkey_with_endpoint(
+        app,
+        hotkey,
+        port,
+        HotkeyRoute {
+            endpoint: "/api/capture",
+            label: "screenshot",
+        },
+    )
+}
+
+pub(crate) fn register_chat_hotkey(app: &tauri::AppHandle, hotkey: &str, port: u16) -> Result<()> {
+    register_hotkey_with_endpoint(
+        app,
+        hotkey,
+        port,
+        HotkeyRoute {
+            endpoint: "/api/chat/toggle",
+            label: "chat",
+        },
+    )
+}
+
+fn unregister_hotkey_with_endpoint(
+    app: &tauri::AppHandle,
+    hotkey: &str,
+    label: &str,
+) -> Result<()> {
     if hotkey.is_empty() {
         return Ok(());
     }
@@ -107,7 +153,7 @@ pub(crate) fn unregister_hotkey(app: &tauri::AppHandle, hotkey: &str) -> Result<
             .context("run hyprctl eval unbind")?;
         if !result.status.success() {
             return Err(anyhow::anyhow!(
-                "Hyprland rejected screenshot keybind removal: {}",
+                "Hyprland rejected {label} keybind removal: {}",
                 String::from_utf8_lossy(&result.stderr).trim()
             ));
         }
@@ -115,6 +161,14 @@ pub(crate) fn unregister_hotkey(app: &tauri::AppHandle, hotkey: &str) -> Result<
     }
     app.global_shortcut().unregister(hotkey)?;
     Ok(())
+}
+
+pub(crate) fn unregister_hotkey(app: &tauri::AppHandle, hotkey: &str) -> Result<()> {
+    unregister_hotkey_with_endpoint(app, hotkey, "screenshot")
+}
+
+pub(crate) fn unregister_chat_hotkey(app: &tauri::AppHandle, hotkey: &str) -> Result<()> {
+    unregister_hotkey_with_endpoint(app, hotkey, "chat")
 }
 
 #[cfg(target_os = "linux")]

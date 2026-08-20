@@ -20,12 +20,13 @@ use super::{
     config::{
         load_saved_config, prepare_run_prompt, proxy_config_from_env, public_config, save_config,
     },
-    platform::{register_hotkey, unregister_hotkey},
+    platform::{register_chat_hotkey, register_hotkey, unregister_chat_hotkey, unregister_hotkey},
     state::{AgentEvent, AppState, ConfigUpdate, ProxyConfig, RunRequest, RunResponse},
 };
 
 #[path = "server_login.rs"]
 mod login;
+use super::chat::{chat, toggle_chat_endpoint};
 
 pub(crate) async fn run_server(
     app: tauri::AppHandle,
@@ -57,6 +58,7 @@ pub(crate) async fn run_server(
     });
     app.manage(Arc::clone(&state));
     register_hotkey(&app, &config.hotkey, port)?;
+    register_chat_hotkey(&app, &config.chat_hotkey, port)?;
 
     let app = build_router(state, runtime);
     let bind_addr = env::var("SCREEN_AGENT_BIND_ADDR").unwrap_or_else(|_| "127.0.0.1".to_owned());
@@ -201,35 +203,86 @@ fn apply_simple_config(config: &mut ProxyConfig, update: &ConfigUpdate) -> Resul
     Ok(())
 }
 
-async fn apply_hotkey(
+#[derive(Clone, Copy)]
+enum HotkeyKind {
+    Screenshot,
+    Chat,
+}
+
+impl HotkeyKind {
+    fn current(self, config: &ProxyConfig) -> &str {
+        match self {
+            Self::Screenshot => &config.hotkey,
+            Self::Chat => &config.chat_hotkey,
+        }
+    }
+
+    fn set(self, config: &mut ProxyConfig, hotkey: &str) {
+        match self {
+            Self::Screenshot => config.hotkey = hotkey.to_owned(),
+            Self::Chat => config.chat_hotkey = hotkey.to_owned(),
+        }
+    }
+
+    fn register(self, app: &tauri::AppHandle, hotkey: &str, port: u16) -> Result<()> {
+        match self {
+            Self::Screenshot => register_hotkey(app, hotkey, port),
+            Self::Chat => register_chat_hotkey(app, hotkey, port),
+        }
+    }
+
+    fn unregister(self, app: &tauri::AppHandle, hotkey: &str) -> Result<()> {
+        match self {
+            Self::Screenshot => unregister_hotkey(app, hotkey),
+            Self::Chat => unregister_chat_hotkey(app, hotkey),
+        }
+    }
+}
+
+fn hotkey_port() -> u16 {
+    env::var("SCREEN_AGENT_PORT")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(8787)
+}
+
+fn register_with_restore(
+    state: &AppState,
+    kind: HotkeyKind,
+    hotkey: &str,
+    previous: &str,
+) -> Result<(), String> {
+    let port = hotkey_port();
+    if let Err(error) = kind.register(&state.app, hotkey, port) {
+        if !previous.is_empty() {
+            let _ = kind.register(&state.app, previous, port);
+        }
+        return Err(format!("could not register hotkey: {error}"));
+    }
+    Ok(())
+}
+
+fn apply_hotkey(
     state: &AppState,
     config: &mut ProxyConfig,
     hotkey: &str,
+    kind: HotkeyKind,
 ) -> Result<(), String> {
     if hotkey.len() > 80 {
         return Err("hotkey must contain at most 80 characters".to_owned());
     }
-    let previous = config.hotkey.clone();
+    let previous = kind.current(config).to_owned();
     if hotkey == previous {
         return Ok(());
     }
     if !previous.is_empty() {
-        unregister_hotkey(&state.app, &previous)
+        kind.unregister(&state.app, &previous)
             .map_err(|error| format!("could not unregister hotkey: {error}"))?;
     }
     if !hotkey.is_empty() {
-        let port = env::var("SCREEN_AGENT_PORT")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(8787);
-        if let Err(error) = register_hotkey(&state.app, hotkey, port) {
-            if !previous.is_empty() {
-                let _ = register_hotkey(&state.app, &previous, port);
-            }
-            return Err(format!("could not register hotkey: {error}"));
-        }
+        register_with_restore(state, kind, hotkey, &previous)?;
     }
-    config.hotkey = hotkey.to_owned();
+    kind.set(config, hotkey);
     Ok(())
 }
 
@@ -247,6 +300,8 @@ fn build_router(state: Arc<AppState>, runtime: std::path::PathBuf) -> Router {
         .route("/api/events", get(events))
         .route("/api/capture", post(capture))
         .route("/api/run", post(run))
+        .route("/api/chat", post(chat))
+        .route("/api/chat/toggle", post(toggle_chat_endpoint))
         .nest_service("/captures", ServeDir::new(runtime.join("captures")))
         .layer(cors)
         .with_state(state)
@@ -259,9 +314,11 @@ async fn update_config(
     let mut config = state.proxy.write().await;
     apply_simple_config(&mut config, &update).map_err(bad_request)?;
     if let Some(hotkey) = update.hotkey.as_deref() {
-        apply_hotkey(&state, &mut config, hotkey.trim())
-            .await
+        apply_hotkey(&state, &mut config, hotkey.trim(), HotkeyKind::Screenshot)
             .map_err(bad_request)?;
+    }
+    if let Some(hotkey) = update.chat_hotkey.as_deref() {
+        apply_hotkey(&state, &mut config, hotkey.trim(), HotkeyKind::Chat).map_err(bad_request)?;
     }
     let snapshot = config.clone();
     drop(config);

@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { queueRun, statusLabelFor, submitRun } from "./App";
+import { queueChat } from "./ChatOverlay";
+import { normalizeProviders, reorderProviders } from "./components/SettingsControls";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -61,5 +63,35 @@ describe("run requests", () => {
     expect(setState).toHaveBeenLastCalledWith("error");
     expect(setAnswer).toHaveBeenCalledWith("");
     expect(setError).toHaveBeenLastCalledWith("network down");
+  });
+});
+
+describe("chat requests", () => {
+  it("posts prompt with visible conversation history", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ message_id: "message-1" }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(queueChat("Follow up", [{ role: "user", content: "First" }])).resolves.toEqual({
+      ok: true,
+      messageId: "message-1",
+      error: "Could not send message",
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/chat",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ prompt: "Follow up", history: [{ role: "user", content: "First" }] }),
+      }),
+    );
+  });
+});
+
+describe("settings controls", () => {
+  it("keeps provider fallback order draggable and deduplicated", () => {
+    expect(normalizeProviders("catbox, imgpile, catbox")).toEqual(["catbox", "imgpile"]);
+    expect(reorderProviders(["catbox", "imgpile", "imgbb"], 2, 0)).toEqual(["imgbb", "catbox", "imgpile"]);
   });
 });

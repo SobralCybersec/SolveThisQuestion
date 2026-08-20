@@ -4,7 +4,7 @@ use std::{env, path::Path};
 
 use super::{
     platform::wayland_hyprland,
-    state::{default_image_upload_providers, ProxyConfig},
+    state::{default_chat_hotkey, default_image_upload_providers, ProxyConfig},
 };
 
 pub(crate) fn prompt_with_short_answer(prompt: String) -> String {
@@ -25,6 +25,14 @@ pub(crate) fn prepare_run_prompt(prompt: String) -> Result<String, &'static str>
     let prompt = prompt_with_short_answer(raw_prompt.to_owned());
     if prompt.len() > 4000 {
         return Err("prompt must contain 1-4000 characters");
+    }
+    Ok(prompt)
+}
+
+pub(crate) fn prepare_chat_prompt(prompt: String) -> Result<String, &'static str> {
+    let prompt = prompt.trim().to_owned();
+    if prompt.is_empty() || prompt.len() > 4000 {
+        return Err("message must contain 1-4000 characters");
     }
     Ok(prompt)
 }
@@ -78,6 +86,9 @@ pub(crate) fn proxy_config_from_env() -> ProxyConfig {
         hotkey: env::var("SCREEN_AGENT_HOTKEY")
             .map(|value| value.trim().to_owned())
             .unwrap_or_else(|_| "CommandOrControl+Shift+S".to_owned()),
+        chat_hotkey: env::var("SCREEN_AGENT_CHAT_HOTKEY")
+            .map(|value| value.trim().to_owned())
+            .unwrap_or_else(|_| default_chat_hotkey()),
         imglink_upload: env_bool("SCREEN_AGENT_IMGLINK_UPLOAD", false),
         imglink_api_key: env_value(&["SCREEN_AGENT_IMGLINK_API_KEY", "IMGLINK_API_KEY"]),
         image_upload_providers: env_value(&["SCREEN_AGENT_IMAGE_UPLOAD_PROVIDERS"])
@@ -132,6 +143,7 @@ pub(crate) fn public_config(config: &ProxyConfig) -> Value {
         "chatgpt_think": config.chatgpt_think,
         "session_id": config.session_id,
         "hotkey": config.hotkey,
+        "chat_hotkey": config.chat_hotkey,
         "hotkey_backend": if wayland_hyprland() { "hyprland" } else { "tauri" },
         "imglink_upload": config.imglink_upload,
         "imglink_api_key_configured": config.imglink_api_key.is_some(),

@@ -256,6 +256,73 @@ async function askProxy(prompt, pageState, screenshot, webSearch, imageUpload) {
   return { text: "Proxy returned an empty answer.", image: true };
 }
 
+function responseText(message) {
+  const content = message?.content;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) return content.map((part) => part?.text || "").join("").trim();
+  return "";
+}
+
+async function chat(command) {
+  const prompt = String(command.prompt || "").trim();
+  const proxy = (process.env.RUST_PROXY_HUB_URL || process.env.GPT_PROXY_URL)?.replace(/\/$/, "");
+  const history = Array.isArray(command.history)
+    ? command.history.filter((message) => ["user", "assistant"].includes(message?.role) && typeof message?.content === "string")
+    : [];
+  if (!proxy) {
+    const embedded = await ensureEmbeddedProxy();
+    try {
+      const result = await embedded.call("chatgpt", "chat", {
+        model: process.env.GPT_PROXY_MODEL || "chatgpt:chatgpt-web-session",
+        chatgpt_mode: process.env.GPT_PROXY_CHATGPT_MODE || "web",
+        session_id: process.env.GPT_PROXY_SESSION_ID || "screen-agent",
+        prompt,
+        web_search: Boolean(command.web_search),
+        stream: false,
+        runtime_dir: runtime,
+        browser: "chromium",
+        headless: envBool("SCREEN_AGENT_CHATGPT_HEADLESS", true),
+      });
+      return { text: result?.text || "Embedded proxy returned an empty answer.", reasoning_content: result?.reasoning_content || null };
+    } catch (error) {
+      await resetEmbeddedProxy();
+      throw error;
+    }
+  }
+  const apiKey = process.env.RUST_PROXY_HUB_API_KEY || process.env.GPT_PROXY_API_KEY;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 240000);
+  let response;
+  try {
+    response = await fetch(`${proxy}/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(apiKey ? { authorization: `Bearer ${apiKey}`, "x-api-key": apiKey } : {}),
+      },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: process.env.GPT_PROXY_MODEL || "chatgpt:chatgpt-web-session",
+        stream: false,
+        ...(process.env.GPT_PROXY_SESSION_ID ? { user: process.env.GPT_PROXY_SESSION_ID } : {}),
+        chatgpt_mode: process.env.GPT_PROXY_CHATGPT_MODE || "web",
+        web_search: Boolean(command.web_search),
+        messages: [...history, { role: "user", content: prompt }],
+      }),
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+  const raw = await response.text();
+  if (!response.ok) throw new Error(`GPT proxy returned ${response.status}: ${raw.slice(0, 400)}`);
+  const payload = JSON.parse(raw);
+  const message = payload.choices?.[0]?.message || {};
+  return {
+    text: responseText(message) || "Proxy returned an empty answer.",
+    reasoning_content: typeof message.reasoning_content === "string" ? message.reasoning_content : null,
+  };
+}
+
 function startEmbeddedProxy() {
   const child = spawn(process.execPath, [embeddedBridge], {
     cwd: path.dirname(embeddedBridge),
@@ -446,8 +513,10 @@ for await (const line of input) {
         ? await embeddedCloseLogin()
       : command.cmd === "status"
         ? await embeddedStatus()
-        : command.cmd === "analyze_screenshot"
+      : command.cmd === "analyze_screenshot"
           ? await analyzeScreenshot(command)
+        : command.cmd === "chat"
+          ? await chat(command)
         : await analyze(command);
     console.log(JSON.stringify(result));
   } catch (error) {

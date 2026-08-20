@@ -105,6 +105,34 @@ async fn show_overlay(state: &AppState, code: &str, language: &str) {
     }
 }
 
+pub(crate) fn toggle_chat_overlay(app: tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("chat-overlay") {
+        if window.is_visible().unwrap_or(false) {
+            let _ = window.hide();
+        } else {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+        return;
+    }
+    let url = tauri::WebviewUrl::App("index.html?chat=1".into());
+    match tauri::WebviewWindowBuilder::new(&app, "chat-overlay", url)
+        .title("Screen Agent Chat")
+        .inner_size(720.0, 640.0)
+        .min_inner_size(420.0, 420.0)
+        .always_on_top(true)
+        .decorations(false)
+        .focusable(true)
+        .skip_taskbar(true)
+        .build()
+    {
+        Ok(window) => {
+            let _ = window.set_focus();
+        }
+        Err(error) => tracing::error!(%error, "chat overlay window build failed"),
+    }
+}
+
 async fn notify(summary: &str, body: String) {
     let summary = summary.to_owned();
     let _ = tokio::task::spawn_blocking(move || {

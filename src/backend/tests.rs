@@ -1,7 +1,7 @@
 use super::{
     bridge::acquire_bridge_process_lock,
     config::*,
-    state::{default_image_upload_providers, ProxyConfig, RunRequest},
+    state::{default_image_upload_providers, ChatRequest, ProxyConfig, RunRequest},
 };
 
 #[test]
@@ -53,6 +53,19 @@ fn run_request_defaults_and_prompt_validation_work() {
     assert!(prepare_run_prompt("x".repeat(4001)).is_err());
 }
 
+#[test]
+fn chat_request_keeps_normal_prompt_without_capture_instruction() {
+    let request: ChatRequest = serde_json::from_value(serde_json::json!({
+        "prompt": "  Explain this  "
+    }))
+    .expect("chat request");
+    assert_eq!(
+        prepare_chat_prompt(request.prompt).expect("valid message"),
+        "Explain this"
+    );
+    assert!(prepare_chat_prompt("   ".to_owned()).is_err());
+}
+
 #[tokio::test]
 async fn proxy_config_round_trips_to_disk() {
     let path = std::env::temp_dir().join(format!("screen-agent-{}.json", uuid::Uuid::new_v4()));
@@ -64,6 +77,7 @@ async fn proxy_config_round_trips_to_disk() {
         chatgpt_think: false,
         session_id: Some("screen-agent".to_owned()),
         hotkey: "CommandOrControl+Shift+S".to_owned(),
+        chat_hotkey: "CommandOrControl+Shift+C".to_owned(),
         imglink_upload: true,
         imglink_api_key: Some("imglink-secret".to_owned()),
         image_upload_providers: default_image_upload_providers(),

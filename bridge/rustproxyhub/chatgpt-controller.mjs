@@ -97,8 +97,13 @@ async function sendChatGPTWithRetries(context) {
   let sent = await send(compactChatGPTPrompt(context.prompt, 18000))
   if (sent.requestResult.status === 401 || sent.requestResult.status === 403) {
     template = await captureChatGPTTemplate(true)
-    session = state.chatgpt.webSessions.get(context.sessionKey) || chatGPTSessionFromTemplate(template)
-    if (session) state.chatgpt.webSessions.set(context.sessionKey, session)
+    // Expired auth and stale conversation often arrive together. Refresh
+    // headers, then start a clean conversation instead of replaying the bad parent.
+    session = null
+    if (context.sessionKey) {
+      state.chatgpt.webSessions.delete(context.sessionKey)
+      persistChatGPTWebSessions()
+    }
     sent = await send(compactChatGPTPrompt(context.prompt, 18000))
   }
   if (sent.requestResult.status === 413) sent = await send(compactChatGPTPrompt(context.prompt, 9000))
@@ -174,16 +179,9 @@ function buildChatGPTResult(payload, sent, conversationId) {
   }
 }
 
-async function chatChatGPTWeb(options) {
-  const { model, prompt, system_prompt, web_search = false, session_id = null, emitStream = null } = options
-  await ensureLiveChatGPTSession()
-  const page = state.chatgpt.page
-  if (!page) throw new Error('ChatGPT Playwright not initialized')
-  const template = await captureChatGPTTemplate(false)
-  const sessionKey = chatGPTSessionKey(session_id)
-  const session = state.chatgpt.webSessions.get(sessionKey) || chatGPTSessionFromTemplate(template)
-  if (session) state.chatgpt.webSessions.set(sessionKey, session)
-  const context = { page, template, session, sessionKey, model, web_search, system_prompt, emitStream, prompt: normalizeChatGPTPrompt(prompt, web_search) }
+async function chatChatGPTWebRequest(options) {
+  const { page, template, session, sessionKey, model, prompt, system_prompt, web_search, emitStream } = options
+  const context = { page, template, session, sessionKey, model, web_search, system_prompt, emitStream, prompt }
   const sentState = await sendChatGPTWithRetries(context)
   const { sent } = sentState
   const conversationId = conversationIdFrom(sent)
@@ -206,6 +204,38 @@ async function chatChatGPTWeb(options) {
   logConversationShape(payload)
   updateChatGPTSession(sessionKey, conversationId, payload, sent)
   return buildChatGPTResult(payload, sent, conversationId)
+}
+
+async function chatChatGPTWeb(options) {
+  const { model, prompt, system_prompt, web_search = false, session_id = null, emitStream = null } = options
+  await ensureLiveChatGPTSession()
+  const page = state.chatgpt.page
+  if (!page) throw new Error('ChatGPT Playwright not initialized')
+  const template = await captureChatGPTTemplate(false)
+  const sessionKey = chatGPTSessionKey(session_id)
+  const session = state.chatgpt.webSessions.get(sessionKey) || chatGPTSessionFromTemplate(template)
+  if (session) state.chatgpt.webSessions.set(sessionKey, session)
+  const request = (requestTemplate, requestSession) => chatChatGPTWebRequest({
+    page,
+    template: requestTemplate,
+    session: requestSession,
+    sessionKey,
+    model,
+    web_search,
+    system_prompt,
+    emitStream,
+    prompt: normalizeChatGPTPrompt(prompt, web_search),
+  })
+  try {
+    return await request(template, session)
+  } catch (error) {
+    if (!session) throw error
+    state.chatgpt.webSessions.delete(sessionKey)
+    persistChatGPTWebSessions()
+    bridgeDebug(`chatgpt conversation session failed; starting a new chat: ${error instanceof Error ? error.message : String(error)}`)
+    const freshTemplate = await captureChatGPTTemplate(false).catch(() => template)
+    return request(freshTemplate, null)
+  }
 }
 
 async function chatChatGPT(options) {

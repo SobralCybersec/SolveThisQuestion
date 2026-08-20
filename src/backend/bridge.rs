@@ -12,7 +12,7 @@ use tokio::{
 };
 use uuid::Uuid;
 
-use super::state::{AppState, ProxyConfig};
+use super::state::{AppState, ChatRequest, ProxyConfig};
 
 pub(crate) struct BridgeProcess {
     pub(crate) child: Child,
@@ -125,12 +125,7 @@ pub(crate) async fn run_bridge(
     state: &AppState,
     request: &BridgeRunRequest,
 ) -> Result<serde_json::Value> {
-    if state.proxy.read().await.url.is_empty() {
-        let status = agent_request(state, serde_json::json!({ "cmd": "status" }), 30).await?;
-        if status.get("logged_in") != Some(&serde_json::Value::Bool(true)) {
-            anyhow::bail!("ChatGPT login required. Open embedded ChatGPT login first.");
-        }
-    }
+    ensure_embedded_login(state).await?;
     agent_request(
         state,
         serde_json::json!({
@@ -143,6 +138,35 @@ pub(crate) async fn run_bridge(
         250,
     )
     .await
+}
+
+pub(crate) async fn chat_bridge(
+    state: &AppState,
+    request: &ChatRequest,
+) -> Result<serde_json::Value> {
+    ensure_embedded_login(state).await?;
+    agent_request(
+        state,
+        serde_json::json!({
+            "cmd": "chat",
+            "prompt": request.prompt,
+            "history": request.history,
+            "web_search": request.web_search,
+        }),
+        250,
+    )
+    .await
+}
+
+async fn ensure_embedded_login(state: &AppState) -> Result<()> {
+    if !state.proxy.read().await.url.is_empty() {
+        return Ok(());
+    }
+    let status = agent_request(state, serde_json::json!({ "cmd": "status" }), 30).await?;
+    if status.get("logged_in") != Some(&serde_json::Value::Bool(true)) {
+        anyhow::bail!("ChatGPT login required. Open embedded ChatGPT login first.");
+    }
+    Ok(())
 }
 
 pub(crate) async fn spawn_bridge_process(state: &AppState) -> Result<BridgeProcess> {

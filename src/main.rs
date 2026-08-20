@@ -1,13 +1,14 @@
 mod backend;
 
-use std::path::PathBuf;
+use std::{path::PathBuf, str::FromStr, sync::Arc};
 use tauri::{Manager, WindowEvent};
-use tauri_plugin_global_shortcut::ShortcutState;
+use tauri_plugin_global_shortcut::{Shortcut, ShortcutState};
 
 use crate::backend::server::run_server;
 use crate::backend::{
     capture,
     platform::{configure_linux_display, create_tray, suppress_ayatana_deprecation_warning},
+    state::AppState,
 };
 
 fn init_logging() {
@@ -61,7 +62,19 @@ fn main() {
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, _shortcut, event| {
                     if event.state == ShortcutState::Pressed {
-                        capture::trigger_desktop_capture(app.clone());
+                        let chat_id = app.try_state::<Arc<AppState>>().and_then(|state| {
+                            state
+                                .proxy
+                                .try_read()
+                                .ok()
+                                .and_then(|config| Shortcut::from_str(&config.chat_hotkey).ok())
+                                .map(|shortcut| shortcut.id())
+                        });
+                        if chat_id == Some(_shortcut.id()) {
+                            capture::toggle_chat_overlay(app.clone());
+                        } else {
+                            capture::trigger_desktop_capture(app.clone());
+                        }
                     }
                 })
                 .build(),

@@ -60,6 +60,8 @@ pub(crate) struct ProxyConfig {
     pub(crate) chatgpt_think: bool,
     pub(crate) session_id: Option<String>,
     pub(crate) hotkey: String,
+    #[serde(default = "default_chat_hotkey")]
+    pub(crate) chat_hotkey: String,
     pub(crate) imglink_upload: bool,
     pub(crate) imglink_api_key: Option<String>,
     #[serde(default = "default_image_upload_providers")]
@@ -81,6 +83,7 @@ pub(crate) struct ConfigUpdate {
     pub(crate) chatgpt_think: Option<bool>,
     pub(crate) session_id: Option<String>,
     pub(crate) hotkey: Option<String>,
+    pub(crate) chat_hotkey: Option<String>,
     pub(crate) imglink_upload: Option<bool>,
     pub(crate) imglink_api_key: Option<String>,
     pub(crate) clear_imglink_api_key: Option<bool>,
@@ -94,8 +97,33 @@ pub(crate) struct ConfigUpdate {
     pub(crate) code_delivery: Option<String>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub(crate) struct ChatMessage {
+    pub(crate) role: String,
+    pub(crate) content: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ChatRequest {
+    pub(crate) prompt: String,
+    #[serde(default)]
+    pub(crate) history: Vec<ChatMessage>,
+    #[serde(default)]
+    pub(crate) web_search: bool,
+}
+
+#[derive(Serialize)]
+pub(crate) struct ChatResponse {
+    pub(crate) message_id: Uuid,
+    pub(crate) status: &'static str,
+}
+
 fn default_code_delivery() -> String {
     "notify".to_owned()
+}
+
+pub(crate) fn default_chat_hotkey() -> String {
+    "CommandOrControl+Shift+C".to_owned()
 }
 
 pub(crate) fn default_image_upload_providers() -> String {
