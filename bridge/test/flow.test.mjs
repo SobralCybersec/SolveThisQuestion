@@ -4,6 +4,7 @@ import {
   DEFAULT_EMPTY_ANSWER_RETRY_TIMEOUT_MS,
   DEFAULT_RESPONSE_POLL_ATTEMPTS,
   DEFAULT_RESPONSE_POLL_INTERVAL_MS,
+  composerText,
   submitChatGPTPrompt,
   waitForAssistantAnswer,
   waitForChatGPTResponse,
@@ -97,6 +98,37 @@ test('prompt submission falls back to Enter after button deadline', async () => 
   assert.equal(method, 'keyboard')
 })
 
+test('prompt submission polls uncleared button then uses keyboard', async () => {
+  let value = 'prompt'
+  let clock = 0
+  const button = {
+    count: async () => 1,
+    isVisible: async () => true,
+    isDisabled: async () => false,
+    click: async () => {},
+  }
+  const composer = {
+    inputValue: async () => value,
+    press: async key => { assert.equal(key, 'Enter'); value = '' },
+  }
+  const method = await submitChatGPTPrompt({
+    page: { locator: () => ({ last: () => button }) }, composer, selector: 'button',
+    deadlineMs: 1, now: () => clock, sleep: async ms => { clock += ms },
+  })
+  assert.equal(method, 'keyboard')
+})
+
+test('prompt submission reports failure when keyboard leaves composer populated', async () => {
+  const composer = { inputValue: async () => 'prompt', press: async () => {} }
+  await assert.rejects(
+    submitChatGPTPrompt({
+      page: { locator: () => ({ last: () => ({ count: async () => 0 }) }) },
+      composer, selector: 'button', deadlineMs: 0, sleep: async () => {},
+    }),
+    /composer did not submit prompt/,
+  )
+})
+
 test('poll defaults bound empty-response wait', () => {
   assert.equal(DEFAULT_RESPONSE_POLL_ATTEMPTS, 40)
   assert.equal(DEFAULT_RESPONSE_POLL_INTERVAL_MS, 250)
@@ -128,4 +160,32 @@ test('assistant answer waits for stable non-streaming text', async () => {
   })
   assert.deepEqual(result, { answer: 'answer', retry: false })
   assert.equal(clock, 1_000)
+})
+
+test('assistant answer handles streaming and uses default timing callbacks', async () => {
+  let reads = 0
+  const result = await waitForAssistantAnswer({
+    read: async () => ({ text: '```answer```', streaming: reads++ === 0 }),
+    stableMs: 0, codeStableMs: 0, intervalMs: 0,
+  })
+  assert.equal(result.answer, '```answer```')
+  assert.equal(result.retry, false)
+})
+
+test('response polling supports default extractor', async () => {
+  const result = await waitForChatGPTResponse({
+    read: async () => response('body'), attempts: 1, sleep: async () => {},
+  })
+  assert.deepEqual(result, { body: 'body', status: 200 })
+})
+
+test('composer text falls back to inner text when input value fails', async () => {
+  assert.equal(await composerText({
+    inputValue: async () => { throw new Error('detached') },
+    innerText: async () => ' fallback ',
+  }), 'fallback')
+  assert.equal(await composerText({
+    inputValue: async () => { throw new Error('detached') },
+    innerText: async () => { throw new Error('closed') },
+  }), '')
 })

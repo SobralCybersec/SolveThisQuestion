@@ -149,6 +149,37 @@ fn apply_connection_config(config: &mut ProxyConfig, update: &ConfigUpdate) -> R
     apply_chatgpt_config(config, update)
 }
 
+fn apply_optional_secret(slot: &mut Option<String>, clear: bool, value: Option<&str>) {
+    if clear {
+        *slot = None;
+    } else if let Some(value) = value.filter(|value| !value.trim().is_empty()) {
+        *slot = Some(value.trim().to_owned());
+    }
+}
+
+fn apply_delivery_credentials(config: &mut ProxyConfig, update: &ConfigUpdate) {
+    apply_optional_secret(
+        &mut config.imglink_api_key,
+        update.clear_imglink_api_key.unwrap_or(false),
+        update.imglink_api_key.as_deref(),
+    );
+    apply_optional_secret(
+        &mut config.imgpile_api_token,
+        update.clear_imgpile_api_token.unwrap_or(false),
+        update.imgpile_api_token.as_deref(),
+    );
+    apply_optional_secret(
+        &mut config.postimages_api_token,
+        update.clear_postimages_api_token.unwrap_or(false),
+        update.postimages_api_token.as_deref(),
+    );
+    apply_optional_secret(
+        &mut config.imgbb_api_key,
+        update.clear_imgbb_api_key.unwrap_or(false),
+        update.imgbb_api_key.as_deref(),
+    );
+}
+
 fn apply_delivery_config(config: &mut ProxyConfig, update: &ConfigUpdate) {
     if let Some(enabled) = update.imglink_upload {
         config.imglink_upload = enabled;
@@ -158,45 +189,10 @@ fn apply_delivery_config(config: &mut ProxyConfig, update: &ConfigUpdate) {
             config.code_delivery = mode.clone();
         }
     }
-    if update.clear_imglink_api_key.unwrap_or(false) {
-        config.imglink_api_key = None;
-    } else if let Some(api_key) = update
-        .imglink_api_key
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-    {
-        config.imglink_api_key = Some(api_key.trim().to_owned());
-    }
     if let Some(providers) = &update.image_upload_providers {
         config.image_upload_providers = providers.trim().to_owned();
     }
-    if update.clear_imgpile_api_token.unwrap_or(false) {
-        config.imgpile_api_token = None;
-    } else if let Some(token) = update
-        .imgpile_api_token
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-    {
-        config.imgpile_api_token = Some(token.trim().to_owned());
-    }
-    if update.clear_postimages_api_token.unwrap_or(false) {
-        config.postimages_api_token = None;
-    } else if let Some(token) = update
-        .postimages_api_token
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-    {
-        config.postimages_api_token = Some(token.trim().to_owned());
-    }
-    if update.clear_imgbb_api_key.unwrap_or(false) {
-        config.imgbb_api_key = None;
-    } else if let Some(api_key) = update
-        .imgbb_api_key
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-    {
-        config.imgbb_api_key = Some(api_key.trim().to_owned());
-    }
+    apply_delivery_credentials(config, update);
 }
 
 fn apply_simple_config(config: &mut ProxyConfig, update: &ConfigUpdate) -> Result<(), String> {

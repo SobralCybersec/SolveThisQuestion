@@ -236,9 +236,22 @@ pub(crate) async fn agent_request(
     Err(last_error.unwrap_or_else(|| anyhow::anyhow!("bridge request failed")))
 }
 
-pub(crate) fn bridge_command(state: &AppState, config: &ProxyConfig) -> Command {
-    let mut child_command = Command::new(node_binary());
-    child_command
+fn bridge_bool(value: bool) -> &'static str {
+    if value {
+        "true"
+    } else {
+        "false"
+    }
+}
+
+fn set_optional_env(command: &mut Command, name: &str, value: Option<&str>) {
+    if let Some(value) = value {
+        command.env(name, value);
+    }
+}
+
+fn configure_bridge_command(command: &mut Command, state: &AppState, config: &ProxyConfig) {
+    command
         .arg(&state.bridge)
         .current_dir(state.bridge.parent().unwrap_or(Path::new(".")))
         .env("SCREEN_AGENT_RUNTIME", &state.runtime)
@@ -246,46 +259,51 @@ pub(crate) fn bridge_command(state: &AppState, config: &ProxyConfig) -> Command 
         .env("GPT_PROXY_CHATGPT_MODE", &config.chatgpt_mode)
         .env(
             "SCREEN_AGENT_CHATGPT_THINK",
-            if config.chatgpt_think {
-                "true"
-            } else {
-                "false"
-            },
+            bridge_bool(config.chatgpt_think),
         )
         .env(
             "SCREEN_AGENT_IMGLINK_UPLOAD",
-            if config.imglink_upload {
-                "true"
-            } else {
-                "false"
-            },
+            bridge_bool(config.imglink_upload),
+        )
+        .env(
+            "SCREEN_AGENT_IMAGE_UPLOAD_PROVIDERS",
+            &config.image_upload_providers,
         );
-    child_command.env(
-        "SCREEN_AGENT_IMAGE_UPLOAD_PROVIDERS",
-        &config.image_upload_providers,
-    );
     if !config.url.is_empty() {
-        child_command.env("GPT_PROXY_URL", &config.url);
+        command.env("GPT_PROXY_URL", &config.url);
     }
-    if let Some(key) = &config.api_key {
-        child_command.env("GPT_PROXY_API_KEY", key);
-    }
-    if let Some(session_id) = &config.session_id {
-        child_command.env("GPT_PROXY_SESSION_ID", session_id);
-    }
-    if let Some(key) = &config.imglink_api_key {
-        child_command.env("SCREEN_AGENT_IMGLINK_API_KEY", key);
-    }
-    if let Some(token) = &config.imgpile_api_token {
-        child_command.env("SCREEN_AGENT_IMGPILE_API_TOKEN", token);
-    }
-    if let Some(token) = &config.postimages_api_token {
-        child_command.env("SCREEN_AGENT_POSTIMAGES_API_TOKEN", token);
-    }
-    if let Some(key) = &config.imgbb_api_key {
-        child_command.env("SCREEN_AGENT_IMGBB_API_KEY", key);
-    }
-    child_command
+    set_optional_env(command, "GPT_PROXY_API_KEY", config.api_key.as_deref());
+    set_optional_env(
+        command,
+        "GPT_PROXY_SESSION_ID",
+        config.session_id.as_deref(),
+    );
+    set_optional_env(
+        command,
+        "SCREEN_AGENT_IMGLINK_API_KEY",
+        config.imglink_api_key.as_deref(),
+    );
+    set_optional_env(
+        command,
+        "SCREEN_AGENT_IMGPILE_API_TOKEN",
+        config.imgpile_api_token.as_deref(),
+    );
+    set_optional_env(
+        command,
+        "SCREEN_AGENT_POSTIMAGES_API_TOKEN",
+        config.postimages_api_token.as_deref(),
+    );
+    set_optional_env(
+        command,
+        "SCREEN_AGENT_IMGBB_API_KEY",
+        config.imgbb_api_key.as_deref(),
+    );
+}
+
+pub(crate) fn bridge_command(state: &AppState, config: &ProxyConfig) -> Command {
+    let mut command = Command::new(node_binary());
+    configure_bridge_command(&mut command, state, config);
+    command
 }
 
 fn node_binary() -> &'static str {

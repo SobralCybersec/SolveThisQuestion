@@ -12,6 +12,7 @@ const runtime = process.env.SCREEN_AGENT_RUNTIME || path.resolve(".runtime");
 const captureDir = path.join(runtime, "captures");
 const embeddedBridge = path.join(path.dirname(fileURLToPath(import.meta.url)), "rustproxyhub/index.mjs");
 let activeEmbeddedProxy = null;
+let activeCaptureBrowser = null;
 
 function envBool(name, fallback) {
   const value = process.env[name]?.trim().toLowerCase();
@@ -59,6 +60,24 @@ function captureLaunchOptions() {
   };
 }
 
+function envMs(name, fallback) {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+
+async function resetCaptureBrowser() {
+  const browser = activeCaptureBrowser;
+  activeCaptureBrowser = null;
+  if (browser) await browser.close().catch(() => {});
+}
+
+async function ensureCaptureBrowser() {
+  if (activeCaptureBrowser?.isConnected()) return activeCaptureBrowser;
+  await resetCaptureBrowser();
+  activeCaptureBrowser = await chromium.launch(captureLaunchOptions());
+  return activeCaptureBrowser;
+}
+
 async function uploadScreenshot(screenshot, required = false) {
   if (!required && !envBool("SCREEN_AGENT_IMGLINK_UPLOAD", false)) return { status: "disabled" };
   return uploadImageWithFallback(screenshot);
@@ -99,15 +118,19 @@ async function openTargetPage(page, targetUrl) {
 
 async function analyze(command) {
   await fs.mkdir(captureDir, { recursive: true });
-    const browser = await chromium.launch(captureLaunchOptions());
+  const browser = await ensureCaptureBrowser();
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   try {
-    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    const page = await context.newPage();
     const target = await openTargetPage(page, command.url);
     await page.waitForFunction(() => Array.from(document.images).filter((image) => {
       const rect = image.getBoundingClientRect();
       return rect.bottom > 0 && rect.top < window.innerHeight && rect.width > 20 && rect.height > 20;
-    }).every((image) => image.complete && image.naturalWidth > 0), undefined, { timeout: 12000 }).catch(() => {});
-    await page.waitForTimeout(300);
+    }).every((image) => image.complete && image.naturalWidth > 0), undefined, {
+      timeout: envMs("SCREEN_AGENT_IMAGE_WAIT_MS", 4000),
+    }).catch(() => {});
+    const settleMs = envMs("SCREEN_AGENT_CAPTURE_SETTLE_MS", 100);
+    if (settleMs) await page.waitForTimeout(settleMs);
     const id = String(command.run_id || Date.now());
     const screenshot = path.join(captureDir, `${id}.png`);
     await page.screenshot({ path: screenshot, fullPage: false });
@@ -153,7 +176,7 @@ async function analyze(command) {
     const result = await askProxy(command.prompt, pageState, screenshot, Boolean(command.web_search), imageUpload);
     return { ...pageState, screenshot: `/captures/${id}.png`, screenshot_size: screenshotSize, image_upload: imageUpload, answer: result.text, image_analyzed: result.image, web_search: Boolean(command.web_search) };
   } finally {
-    await browser.close();
+    await context.close().catch(() => {});
   }
 }
 
@@ -304,13 +327,21 @@ function startEmbeddedProxy() {
 // of the bridge process so captures don't relaunch Chromium every time.
 async function ensureEmbeddedProxy() {
   await fs.mkdir(runtime, { recursive: true });
-  if (!activeEmbeddedProxy) activeEmbeddedProxy = startEmbeddedProxy();
-  await activeEmbeddedProxy.call("chatgpt", "init", {
+  if (activeEmbeddedProxy) return activeEmbeddedProxy;
+  const proxy = startEmbeddedProxy();
+  activeEmbeddedProxy = proxy;
+  try {
+    await proxy.call("chatgpt", "init", {
     runtime_dir: runtime,
     headless: envBool("SCREEN_AGENT_CHATGPT_HEADLESS", true),
     browser: "chromium",
-  });
-  return activeEmbeddedProxy;
+    });
+    return proxy;
+  } catch (error) {
+    activeEmbeddedProxy = null;
+    await proxy.close().catch(() => {});
+    throw error;
+  }
 }
 
 async function resetEmbeddedProxy() {
@@ -399,6 +430,7 @@ async function embeddedCloseLogin() {
 for (const signal of ["SIGTERM", "SIGINT"]) {
   process.on(signal, async () => {
     await resetEmbeddedProxy();
+    await resetCaptureBrowser();
     process.exit(0);
   });
 }
@@ -426,3 +458,4 @@ for await (const line of input) {
 // stdin closed (parent asked us to exit): tear down the warm browser and the
 // embedded proxy grandchild so the ChatGPT profile lock is released.
 await resetEmbeddedProxy();
+await resetCaptureBrowser();

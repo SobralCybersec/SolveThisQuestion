@@ -49,6 +49,27 @@ test('extractors handle model, reasoning, and empty payloads', () => {
   assert.equal(extractChatGPTAssistantText({ mapping: {} }), '')
 })
 
+test('extractors cover direct messages, fallback model fields, and nested values', () => {
+  const direct = assistant('direct', 1, [{ content: { output_text: ['nested answer'] } }], {
+    metadata: { model_slug: '', model: '' },
+    model_slug: '',
+    model: '',
+  })
+  const payload = {
+    message: direct,
+    mapping: { ignored: null, duplicate: { message: direct } },
+    model_slug: 'fallback-model',
+  }
+  assert.equal(extractChatGPTAssistantText(payload), 'nested answer')
+  assert.equal(extractChatGPTAssistantModel(payload), 'fallback-model')
+  assert.equal(extractChatGPTAssistantModel({ mapping: {} }), '')
+  assert.equal(extractChatGPTAssistantReasoning({ message: assistant('r', 1, ['answer'], {
+    content: { reasoning: [null, 7, 'reason'] },
+  }) }), 'reason')
+  assert.equal(extractChatGPTAssistantReasoning({ mapping: {} }), '')
+  assert.equal(extractChatGPTAssistantText(null), '')
+})
+
 test('SSE extractor returns final answer after completion marker', () => {
   const message = assistant('a', 1, ['streamed answer'])
   const raw = [
@@ -57,4 +78,17 @@ test('SSE extractor returns final answer after completion marker', () => {
   ].join('\n\n')
   assert.equal(extractChatGPTAssistantTextFromSse(raw), 'streamed answer')
   assert.equal(extractChatGPTAssistantTextFromSse(`data: ${JSON.stringify({ message })}`), '')
+})
+
+test('SSE extractor ignores empty, unrelated, and malformed lines', () => {
+  const message = assistant('a', 1, ['answer'])
+  const raw = [
+    'event: message',
+    '',
+    'noise',
+    'data:',
+    'data: {malformed',
+    `data: ${JSON.stringify({ type: 'message.completed', message })}`,
+  ].join('\n')
+  assert.equal(extractChatGPTAssistantTextFromSse(raw), 'answer')
 })

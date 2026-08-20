@@ -293,23 +293,6 @@ function sendEvent(id, event, result = null) {
   process.stdout.write(`${JSON.stringify({ id, event, result })}\n`)
 }
 
-const state = {
-  chatgpt: {
-    context: null,
-    page: null,
-    headless: null,
-    initPromise: null,
-    initPromiseKey: null,
-    cachedHeaders: null,
-    lastHeadersTime: 0,
-    streamEmitter: null,
-    streamLock: Promise.resolve(),
-    runtimeDir: null,
-    browserChoice: null,
-    webSessions: new Map(),
-  },
-}
-
 const MODEL_KEY_RE = /["'](?:model|model_slug|slug|id|name)["']\s*:\s*["']([a-zA-Z0-9][\w.:-]{1,95})["']/g
 const CHATGPT_MODEL_RE = /^(?:gpt|o[0-9]|chatgpt)[a-z0-9_.:-]*$/i
 const GENERIC_MODEL_RE = /^[a-z0-9][a-z0-9_.:-]{1,80}$/i

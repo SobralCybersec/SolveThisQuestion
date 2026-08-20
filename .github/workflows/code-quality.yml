@@ -97,6 +97,6 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: node scripts/tests/jscpd.mjs
+      - run: node scripts/tests/jscpd.mjs src bridge/rustproxyhub frontend/src
       - name: Add duplication metrics to summary
         run: cat reports/quality/jscpd-metrics.json >> "$GITHUB_STEP_SUMMARY"
