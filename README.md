@@ -40,3 +40,12 @@ curl http://127.0.0.1:8787/api/health
 ```
 
 Without an external proxy URL, login is required before runs. This prevents silent local-summary responses and keeps the web-session path explicit.
+
+## Quality
+
+```bash
+pnpm quality:install
+pnpm quality
+```
+
+`quality:install` installs pinned `jscpd` and Lizard dependencies, plus the Rust Clippy component. Reports are written to `reports/quality/`. `quality` runs Node tests, strict Clippy, benchmarks, file-size checks, duplication checks, and Lizard complexity checks. The terminal ends with a Code Quality Report containing Lizard, JSCPD, test, coverage, source-extension, and benchmark tables.

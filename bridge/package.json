@@ -3,7 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "smoke": "node index.mjs"
+    "smoke": "node index.mjs",
+    "test": "node --test --test-concurrency=1 test/*.test.mjs",
+    "benchmark": "node ../benchmarks/bridge.mjs"
   },
   "dependencies": {
     "playwright": "^1.60.0"

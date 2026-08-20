@@ -6,6 +6,8 @@
 /frontend/dist
 /frontend/tsconfig.tsbuildinfo
 /.runtime
+/reports
+/.quality-venv
 .env
 .env.*
 !.env.example

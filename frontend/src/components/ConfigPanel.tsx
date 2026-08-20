@@ -35,6 +35,67 @@ const fallback: Config = {
   mode: "embedded",
 };
 
+type SaveContext = {
+  config: Config;
+  apiKey: string;
+  clearKey: boolean;
+  imglinkKey: string;
+  clearImgLinkKey: boolean;
+  setBusy: (value: boolean) => void;
+  setMessage: (value: string) => void;
+  setError: (value: string) => void;
+  setConfig: (value: Config | ((current: Config) => Config)) => void;
+  setApiKey: (value: string) => void;
+  setClearKey: (value: boolean) => void;
+  setImgLinkKey: (value: string) => void;
+  setClearImgLinkKey: (value: boolean) => void;
+  setHealth: (value: Health | ((current: Health | null) => Health | null)) => void;
+};
+
+function buildConfigPayload(config: Config, secrets: { apiKey: string; clearKey: boolean; imglinkKey: string; clearImgLinkKey: boolean }) {
+  return {
+    url: config.url,
+    model: config.model,
+    chatgpt_mode: config.chatgpt_mode,
+    chatgpt_think: config.chatgpt_think,
+    session_id: config.session_id,
+    hotkey: config.hotkey,
+    imglink_upload: config.imglink_upload,
+    code_delivery: config.code_delivery,
+    ...(secrets.imglinkKey ? { imglink_api_key: secrets.imglinkKey } : {}),
+    ...(secrets.clearImgLinkKey ? { clear_imglink_api_key: true } : {}),
+    ...(secrets.apiKey ? { api_key: secrets.apiKey } : {}),
+    ...(secrets.clearKey ? { clear_api_key: true } : {}),
+  };
+}
+
+async function saveProxyConfig(config: Config, secrets: { apiKey: string; clearKey: boolean; imglinkKey: string; clearImgLinkKey: boolean }) {
+  const response = await fetch(`${API_BASE}/api/config`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(buildConfigPayload(config, secrets)),
+  });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error || "Could not save proxy config");
+  return payload as Partial<Config>;
+}
+
+async function submitConfig(event: FormEvent, context: SaveContext) {
+  event.preventDefault();
+  context.setBusy(true); context.setMessage(""); context.setError("");
+  try {
+    const payload = await saveProxyConfig(context.config, context);
+    context.setConfig((current) => ({ ...current, ...payload }));
+    context.setApiKey(""); context.setClearKey(false); context.setMessage("Saved to app config.");
+    context.setImgLinkKey(""); context.setClearImgLinkKey(false);
+    context.setHealth((current) => current ? { ...current, proxy_configured: Boolean(payload.url), proxy_mode: payload.mode } : current);
+  } catch (reason) {
+    context.setError(reason instanceof Error ? reason.message : "Could not save proxy config");
+  } finally {
+    context.setBusy(false);
+  }
+}
+
 export function ConfigPanel({ open, onClose }: Props) {
   const [config, setConfig] = useState<Config>(fallback);
   const [apiKey, setApiKey] = useState("");
@@ -89,40 +150,11 @@ export function ConfigPanel({ open, onClose }: Props) {
     setConfig((current) => ({ ...current, [key]: value }));
   }
 
-  async function save(event: FormEvent) {
-    event.preventDefault();
-    setBusy(true); setMessage(""); setError("");
-    try {
-      const response = await fetch(`${API_BASE}/api/config`, {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          url: config.url,
-          model: config.model,
-          chatgpt_mode: config.chatgpt_mode,
-          chatgpt_think: config.chatgpt_think,
-          session_id: config.session_id,
-          hotkey: config.hotkey,
-          imglink_upload: config.imglink_upload,
-          code_delivery: config.code_delivery,
-          ...(imglinkKey ? { imglink_api_key: imglinkKey } : {}),
-          ...(clearImgLinkKey ? { clear_imglink_api_key: true } : {}),
-          ...(apiKey ? { api_key: apiKey } : {}),
-          ...(clearKey ? { clear_api_key: true } : {}),
-        }),
-      });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || "Could not save proxy config");
-      setConfig((current) => ({ ...current, ...payload }));
-      setApiKey(""); setClearKey(false); setMessage("Saved to app config.");
-      setImgLinkKey(""); setClearImgLinkKey(false);
-      setHealth((current) => current ? { ...current, proxy_configured: Boolean(payload.url), proxy_mode: payload.mode } : current);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not save proxy config");
-    } finally {
-      setBusy(false);
-    }
-  }
+  const save = (event: FormEvent) => submitConfig(event, {
+    config, apiKey, clearKey, imglinkKey, clearImgLinkKey,
+    setBusy, setMessage, setError, setConfig, setApiKey, setClearKey,
+    setImgLinkKey, setClearImgLinkKey, setHealth,
+  });
 
   async function login() {
     setBusy(true); setMessage(""); setError("");

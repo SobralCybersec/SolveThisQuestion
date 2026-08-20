@@ -12,8 +12,21 @@
     "desktop:build": "pnpm build && cargo build --release",
     "build": "pnpm --filter @screen-agent/frontend build",
     "check": "cargo check && pnpm --filter @screen-agent/frontend build",
+    "test": "cargo test && npm run test:bridge",
+    "test:bridge": "node --test --test-concurrency=1 bridge/test/*.test.mjs",
+    "test:report": "node -e \"require('node:fs').mkdirSync('reports/quality',{recursive:true})\" && node --test --test-concurrency=1 --experimental-test-coverage --test-coverage-include=bridge/rustproxyhub/chatgpt-web-flow.mjs --test-coverage-include=bridge/rustproxyhub/prompt-compaction.mjs --test-coverage-include=bridge/rustproxyhub/chatgpt-web-response.mjs --test-coverage-include=bridge/rustproxyhub/chatgpt-web-session.mjs --test-reporter=junit --test-reporter-destination=reports/quality/bridge-tests.xml --test-reporter=lcov --test-reporter-destination=reports/quality/lcov.info bridge/test/*.test.mjs",
+    "quality:tests": "node --test --test-concurrency=1 scripts/tests/*.node-test.mjs",
+    "quality:clippy": "cargo clippy --all-targets --all-features -- -D warnings",
+    "quality": "npm run quality:tests && npm run test:report && npm run quality:clippy && npm run benchmark && node scripts/tests/quality-review.mjs --root . --test-report reports/quality/bridge-tests.xml",
+    "quality:install": "pnpm install && python -m venv .quality-venv && .quality-venv/bin/python -m pip install -r requirements-quality.txt && rustup component add clippy",
+    "benchmark": "node benchmarks/bridge.mjs",
     "bridge:install": "pnpm --dir bridge install",
     "bridge:smoke": "pnpm --dir bridge smoke"
   },
-  "engines": { "node": ">=20" }
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "jscpd": "^5.0.16"
+  }
 }

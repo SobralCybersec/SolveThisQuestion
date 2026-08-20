@@ -89,38 +89,40 @@ export function extractChatGPTAssistantReasoning(payload) {
   return ''
 }
 
-export function extractChatGPTAssistantTextFromSse(raw, submittedPrompt = '') {
-  let latest = ''
-  let finalized = false
-  let eventName = ''
-  for (const line of String(raw || '').split(/\r?\n/)) {
-    const trimmed = line.trim()
-    if (trimmed.startsWith('event:')) {
-      eventName = trimmed.slice(6).trim()
-      continue
-    }
-    if (!trimmed) {
-      eventName = ''
-      continue
-    }
-    if (!trimmed.startsWith('data:')) continue
-    const data = trimmed.slice(5).trim()
-    if (!data) continue
-    if (data === '[DONE]') {
-      finalized = true
-      continue
-    }
-    try {
-      const parsed = JSON.parse(data)
-      const type = String(parsed.type || parsed.event || eventName).toLowerCase()
-      if (type.includes('completed') || type.endsWith('.done') || parsed.is_completion === true) {
-        finalized = true
-      }
-      const text = extractChatGPTAssistantText(parsed, submittedPrompt)
-      if (text) latest = text
-    } catch {}
+function parseSseData(data, eventName, submittedPrompt) {
+  if (!data) return null
+  if (data === '[DONE]') return { finalized: true, text: '' }
+  try {
+    const parsed = JSON.parse(data)
+    const type = String(parsed.type || parsed.event || eventName).toLowerCase()
+    const finalized = type.includes('completed') || type.endsWith('.done') || parsed.is_completion === true
+    return { finalized, text: extractChatGPTAssistantText(parsed, submittedPrompt) }
+  } catch {
+    return null
   }
-  return finalized ? latest : ''
+}
+
+function processSseLine(line, state, submittedPrompt) {
+  const trimmed = line.trim()
+  if (trimmed.startsWith('event:')) {
+    state.eventName = trimmed.slice(6).trim()
+    return
+  }
+  if (!trimmed) {
+    state.eventName = ''
+    return
+  }
+  if (!trimmed.startsWith('data:')) return
+  const parsed = parseSseData(trimmed.slice(5).trim(), state.eventName, submittedPrompt)
+  if (!parsed) return
+  state.finalized ||= parsed.finalized
+  if (parsed.text) state.latest = parsed.text
+}
+
+export function extractChatGPTAssistantTextFromSse(raw, submittedPrompt = '') {
+  const state = { latest: '', finalized: false, eventName: '' }
+  for (const line of String(raw || '').split(/\r?\n/)) processSseLine(line, state, submittedPrompt)
+  return state.finalized ? state.latest : ''
 }
 
 export function cleanChatGPTUiAssistantText(value, submittedPrompt = '') {

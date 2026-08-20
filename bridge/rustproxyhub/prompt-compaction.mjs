@@ -53,14 +53,9 @@ function fallbackHeadTail(text, maxChars) {
   return `${text.slice(0, headBudget).trimEnd()}${marker}${text.slice(-tailBudget).trimStart()}`
 }
 
-export function compactStructuredPrompt(
-  prompt,
-  { maxChars = 18000, preserveFirstBlock = true } = {},
-) {
-  const cleaned = trimPromptFormatting(prompt)
+function createCompactionResult(prompt, cleaned) {
   const baseline = String(prompt || '')
-  const blocks = splitPromptBlocks(cleaned)
-  const result = {
+  return {
     text: cleaned,
     truncated: false,
     mode: cleaned === baseline.trim() ? 'fit' : 'trim-format',
@@ -69,116 +64,124 @@ export function compactStructuredPrompt(
     removedDuplicateBlocks: 0,
     omittedBlocks: 0,
   }
+}
 
-  if (cleaned.length <= maxChars) return { ...result, compactedChars: cleaned.length }
-  const duplicateScan = new Set()
-  for (const block of blocks) {
+function countDuplicateBlocks(blocks) {
+  const seen = new Set()
+  return blocks.reduce((duplicates, block) => {
     const signature = normalizeBlockSignature(block)
-    if (!signature) continue
-    if (duplicateScan.has(signature)) result.removedDuplicateBlocks += 1
-    else duplicateScan.add(signature)
-  }
-  if (blocks.length <= 1) {
-    const text = fallbackHeadTail(cleaned, maxChars)
-    return {
-      ...result,
-      text,
-      truncated: true,
-      mode: 'head-tail',
-      compactedChars: text.length,
+    if (!signature || !seen.has(signature)) {
+      if (signature) seen.add(signature)
+      return duplicates
     }
-  }
+    return duplicates + 1
+  }, 0)
+}
 
+function compactSingleBlock(result, cleaned, maxChars) {
+  const text = fallbackHeadTail(cleaned, maxChars)
+  return { ...result, text, truncated: true, mode: 'head-tail', compactedChars: text.length }
+}
+
+function createSelection(blocks, maxChars, preserveFirstBlock) {
   const marker = '\n\n[Earlier turns omitted to fit limit]\n\n'
   const firstBlock = preserveFirstBlock ? blocks[0] : ''
-  const firstCost = firstBlock ? firstBlock.length : 0
-  const seen = new Set(firstBlock ? [normalizeBlockSignature(firstBlock)] : [])
-  const tail = []
-  let remaining = maxChars - firstCost - (firstBlock ? marker.length : 0)
+  return {
+    marker,
+    firstBlock,
+    seen: new Set(firstBlock ? [normalizeBlockSignature(firstBlock)] : []),
+    tail: [],
+    remaining: maxChars - (firstBlock ? firstBlock.length + marker.length : 0),
+  }
+}
 
-  for (let index = blocks.length - 1; index >= (preserveFirstBlock ? 1 : 0); index -= 1) {
-    const block = blocks[index]
-    const previousBlock = index > 0 ? blocks[index - 1] : ''
-    const signature = normalizeBlockSignature(block)
-    if (!signature) continue
-    if (seen.has(signature)) {
-      continue
-    }
+function keepPair(selection, previousBlock, block) {
+  const previousSignature = normalizeBlockSignature(previousBlock)
+  const pair = `${previousBlock}\n\n${block}`
+  if (selection.seen.has(previousSignature) || pair.length > selection.remaining) return false
+  selection.tail.unshift(previousBlock, block)
+  selection.seen.add(previousSignature)
+  selection.seen.add(normalizeBlockSignature(block))
+  selection.remaining -= pair.length
+  return true
+}
 
-    const previousRole = blockRole(previousBlock)
-    const currentRole = blockRole(block)
-    const shouldKeepPair =
-      tail.length === 0 &&
-      currentRole !== 'user' &&
-      previousRole === 'user' &&
-      index > (preserveFirstBlock ? 0 : -1)
-    if (shouldKeepPair) {
-      const pair = `${previousBlock}\n\n${block}`
-      if (!seen.has(normalizeBlockSignature(previousBlock)) && pair.length <= remaining) {
-        tail.unshift(previousBlock, block)
-        seen.add(normalizeBlockSignature(previousBlock))
-        seen.add(signature)
-        remaining -= pair.length
-        index -= 1
-        continue
-      }
-    }
+function keepBlock(selection, block, signature) {
+  const separatorCost = selection.tail.length > 0 ? 2 : 0
+  if (block.length + separatorCost > selection.remaining) return false
+  selection.tail.unshift(block)
+  selection.seen.add(signature)
+  selection.remaining -= block.length + separatorCost
+  return true
+}
 
-    const separatorCost = tail.length > 0 ? 2 : 0
-    if (block.length + separatorCost <= remaining) {
-      tail.unshift(block)
-      seen.add(signature)
-      remaining -= block.length + separatorCost
-      continue
-    }
+function selectBlock(selection, blocks, index, preserveFirstBlock, result) {
+  const block = blocks[index]
+  const signature = normalizeBlockSignature(block)
+  if (!signature || selection.seen.has(signature)) return false
 
-    if (tail.length === 0 && remaining > 96) {
-      const trimmed = compactLongBlock(block, remaining)
-      if (trimmed) {
-        tail.unshift(trimmed)
-        seen.add(signature)
-        remaining = 0
-      }
-    } else {
-      result.omittedBlocks += 1
+  const previousBlock = index > 0 ? blocks[index - 1] : ''
+  const isPair = selection.tail.length === 0
+    && blockRole(block) !== 'user'
+    && blockRole(previousBlock) === 'user'
+    && index > (preserveFirstBlock ? 0 : -1)
+  if (isPair && keepPair(selection, previousBlock, block)) return true
+  if (keepBlock(selection, block, signature)) return true
+
+  if (selection.tail.length === 0 && selection.remaining > 96) {
+    const trimmed = compactLongBlock(block, selection.remaining)
+    if (trimmed) {
+      selection.tail.unshift(trimmed)
+      selection.seen.add(signature)
+      selection.remaining = 0
+      return true
     }
+  }
+  result.omittedBlocks += 1
+  return false
+}
+
+function selectTail(blocks, maxChars, preserveFirstBlock, result) {
+  const selection = createSelection(blocks, maxChars, preserveFirstBlock)
+  const firstIndex = preserveFirstBlock ? 1 : 0
+  for (let index = blocks.length - 1; index >= firstIndex; index -= 1) {
+    if (selectBlock(selection, blocks, index, preserveFirstBlock, result) && selection.tail.length > 1) index -= 1
+  }
+  return selection
+}
+
+function latestTail(blocks, maxChars) {
+  const pair = blocks.length >= 2 ? `${blocks.at(-2)}\n\n${blocks.at(-1)}` : blocks.at(-1)
+  return pair.length <= maxChars ? pair : compactLongBlock(blocks.at(-1), maxChars)
+}
+
+function compactStructuredBlocks(result, cleaned, blocks, maxChars, preserveFirstBlock) {
+  const selection = selectTail(blocks, maxChars, preserveFirstBlock, result)
+  if (selection.firstBlock && selection.tail.length === 0 && blocks.length > 1) {
+    const text = latestTail(blocks, maxChars).trim()
+    return { ...result, text, truncated: true, mode: 'latest-tail', compactedChars: text.length }
   }
 
   const parts = []
-  if (firstBlock && tail.length === 0 && blocks.length > 1) {
-    const latestPair = blocks.length >= 2 ? `${blocks.at(-2)}\n\n${blocks.at(-1)}` : blocks.at(-1)
-    const latest = latestPair.length <= maxChars ? latestPair : compactLongBlock(blocks.at(-1), maxChars)
-    return {
-      ...result,
-      text: latest.trim(),
-      truncated: true,
-      mode: 'latest-tail',
-      compactedChars: latest.trim().length,
-    }
-  }
-  if (firstBlock) parts.push(firstBlock)
-  if (firstBlock && tail.length) parts.push(marker.trim())
-  parts.push(...tail)
+  if (selection.firstBlock) parts.push(selection.firstBlock)
+  if (selection.firstBlock && selection.tail.length) parts.push(selection.marker.trim())
+  parts.push(...selection.tail)
+  const text = parts.join('\n\n').trim()
+  if (!text || text.length > maxChars) return compactSingleBlock(result, cleaned, maxChars)
+  return { ...result, text, truncated: true, mode: 'structured', compactedChars: text.length }
+}
 
-  let text = parts.join('\n\n').trim()
-  if (!text || text.length > maxChars) {
-    text = fallbackHeadTail(cleaned, maxChars)
-    return {
-      ...result,
-      text,
-      truncated: true,
-      mode: 'head-tail',
-      compactedChars: text.length,
-    }
-  }
-
-  return {
-    ...result,
-    text,
-    truncated: true,
-    mode: 'structured',
-    compactedChars: text.length,
-  }
+export function compactStructuredPrompt(
+  prompt,
+  { maxChars = 18000, preserveFirstBlock = true } = {},
+) {
+  const cleaned = trimPromptFormatting(prompt)
+  const blocks = splitPromptBlocks(cleaned)
+  const result = createCompactionResult(prompt, cleaned)
+  if (cleaned.length <= maxChars) return { ...result, compactedChars: cleaned.length }
+  result.removedDuplicateBlocks = countDuplicateBlocks(blocks)
+  if (blocks.length <= 1) return compactSingleBlock(result, cleaned, maxChars)
+  return compactStructuredBlocks(result, cleaned, blocks, maxChars, preserveFirstBlock)
 }
 
 export function summarizePromptCompaction(stats) {

@@ -5,8 +5,11 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { extractChatGPTAssistantModel, extractChatGPTAssistantReasoning, extractChatGPTAssistantText } from './chatgpt-web-response.mjs'
+import { DEFAULT_EMPTY_ANSWER_RETRY_TIMEOUT_MS, submitChatGPTPrompt, waitForAssistantAnswer, waitForChatGPTResponse } from './chatgpt-web-flow.mjs'
 import { applyChatGPTConversationSession, chatGPTSessionFromTemplate, chatGPTSessionKey, latestChatGPTAssistantMessageId, loadChatGPTWebSessions, saveChatGPTWebSessions } from './chatgpt-web-session.mjs'
 import { compactStructuredPrompt, summarizePromptCompaction } from './prompt-compaction.mjs'
+import { CHATGPT_PAGE_REQUEST } from './chatgpt-web-page.mjs'
+import { assertSafeAccountId, closeChromiumProfileInstances, isProfileSingletonError, removeStaleChromiumProfileLock } from './chromium-profile.mjs'
 
 // Fix IPv6/IPv4 resolution issue in Node 17+ (localhost resolves to ::1 instead of 127.0.0.1)
 // See: https://github.com/microsoft/playwright/issues/20784
@@ -99,91 +102,6 @@ function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true })
 }
 
-function removeStaleChromiumProfileLock(profileDir) {
-  const lockPath = path.join(profileDir, 'SingletonLock')
-  let target
-  try {
-    target = fs.readlinkSync(lockPath)
-  } catch {
-    return false
-  }
-  const pid = Number(String(target).match(/-(\d+)$/)?.[1])
-  if (!Number.isInteger(pid) || pid <= 0) return false
-  try {
-    process.kill(pid, 0)
-    return false
-  } catch (error) {
-    if (error?.code !== 'ESRCH') return false
-  }
-  for (const name of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
-    try {
-      fs.unlinkSync(path.join(profileDir, name))
-    } catch (error) {
-      if (error?.code !== 'ENOENT') return false
-    }
-  }
-  return true
-}
-
-function chromiumProcessesUsingProfile(profileDir) {
-  if (process.platform === 'win32') return []
-  let output
-  try {
-    output = execFileSync('ps', ['-eo', 'pid=,args='], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      maxBuffer: 2 * 1024 * 1024,
-    })
-  } catch {
-    return []
-  }
-  const expected = path.resolve(profileDir)
-  const pids = []
-  for (const line of output.split('\n')) {
-    const match = line.match(/^\s*(\d+)\s+(.*)$/)
-    if (!match) continue
-    const pid = Number(match[1])
-    if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) continue
-    const userData = match[2].match(/(?:^|\s)--user-data-dir=(?:"([^"]+)"|'([^']+)'|(\S+))/)
-    if (!userData) continue
-    if (path.resolve(userData[1] || userData[2] || userData[3]) === expected) pids.push(pid)
-  }
-  return pids
-}
-
-async function closeChromiumProfileInstances(profileDir) {
-  let pids = chromiumProcessesUsingProfile(profileDir)
-  for (const pid of pids) {
-    try { process.kill(pid, 'SIGTERM') } catch {}
-  }
-  const deadline = Date.now() + 2500
-  while (pids.length && Date.now() < deadline) {
-    await sleep(100)
-    pids = chromiumProcessesUsingProfile(profileDir)
-  }
-  for (const pid of pids) {
-    try { process.kill(pid, 'SIGKILL') } catch {}
-  }
-  return pids.length === 0
-}
-
-function isProfileSingletonError(error) {
-  return /ProcessSingleton|SingletonLock/i.test(error instanceof Error ? error.message : String(error))
-}
-
-// Defense-in-depth: account_id is joined to a filesystem profile path.
-// Reject anything outside [A-Za-z0-9_-]{1,64} before path.resolve sees it.
-const SAFE_ACCOUNT_ID = /^[A-Za-z0-9_-]{1,64}$/
-function assertSafeAccountId(accountId) {
-  if (accountId != null && accountId !== '' && !SAFE_ACCOUNT_ID.test(accountId)) {
-    throw new Error(`unsafe account_id rejected: ${accountId}`)
-  }
-}
-
-// Known install locations per Chromium-family browser, across platforms. Used
-// to fall back to an installed browser when the requested channel's own
-// distribution is missing (e.g. 'msedge' requested on a Linux box that only has
-// Chromium) instead of hard-failing the launch.
 const BROWSER_PATHS = {
   msedge: [
     '/opt/microsoft/msedge/msedge',
@@ -258,11 +176,8 @@ function resolveChromium(preferredChannel) {
   return { engine: chromium }
 }
 
-function chromiumMajorVersion({ executablePath, channel, engine } = {}) {
-  const configured = String(process.env.RUST_PROXY_CHROMIUM_MAJOR || '').match(/^\d+$/)?.[0]
-  if (configured) return configured
-
-  const commands = [
+function chromiumCommands({ executablePath, channel, engine } = {}) {
+  return [
     executablePath,
     channel === 'chrome' ? 'google-chrome' : null,
     channel === 'msedge' ? 'microsoft-edge' : null,
@@ -272,16 +187,29 @@ function chromiumMajorVersion({ executablePath, channel, engine } = {}) {
     'microsoft-edge',
     typeof engine?.executablePath === 'function' ? engine.executablePath() : null,
   ].filter(Boolean)
-  for (const command of commands) {
-    try {
-      const output = execFileSync(command, ['--version'], {
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-        timeout: 3000,
-      })
-      const major = output.match(/(?:Chrome|Chromium|HeadlessChrome|Edge)[/\s](\d+)/i)?.[1]
-      if (major) return major
-    } catch {}
+}
+
+function chromiumVersionFrom(command) {
+  try {
+    const output = execFileSync(command, ['--version'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 3000,
+    })
+    const version = output.split(' ').find(value => value[0] >= '0' && value[0] <= '9') || ''
+    return version.split('.')[0]
+  } catch {
+    return ''
+  }
+}
+
+function chromiumMajorVersion(options = {}) {
+  const { executablePath, channel, engine } = options
+  const configured = Number(process.env.RUST_PROXY_CHROMIUM_MAJOR)
+  if (Number.isInteger(configured) && configured > 0) return String(configured)
+  for (const command of chromiumCommands({ executablePath, channel, engine })) {
+    const major = chromiumVersionFrom(command)
+    if (major) return major
   }
   return ''
 }
@@ -394,14 +322,20 @@ const state = {
   },
 }
 
+const MODEL_KEY_RE = /["'](?:model|model_slug|slug|id|name)["']\s*:\s*["']([a-zA-Z0-9][\w.:-]{1,95})["']/g
+const CHATGPT_MODEL_RE = /^(?:gpt|o[0-9]|chatgpt)[a-z0-9_.:-]*$/i
+const GENERIC_MODEL_RE = /^[a-z0-9][a-z0-9_.:-]{1,80}$/i
+const GENERIC_MODEL_SCAN_RE = /\b[a-z][a-z0-9_.:-]{1,80}\b/g
+const DIRECT_MODEL_PATTERNS = {
+  chatgpt: /\b(?:gpt|o[0-9]|chatgpt)[a-zA-Z0-9_.:-]{1,80}\b/g,
+}
+
 function ensureSessionText(value, fallback) {
   return typeof value === 'string' && value.trim() ? value : fallback
 }
 
 function modelPattern(provider) {
-  return provider === 'chatgpt'
-    ? /^(?:gpt|o[0-9]|chatgpt)[a-z0-9_.:-]*$/i
-    : /^[a-z0-9][a-z0-9_.:-]{1,80}$/i
+  return provider === 'chatgpt' ? CHATGPT_MODEL_RE : GENERIC_MODEL_RE
 }
 
 function addModelCandidate(target, provider, value) {
@@ -411,7 +345,9 @@ function addModelCandidate(target, provider, value) {
   if (modelPattern(provider).test(clean)) target.add(clean)
 }
 
+// #lizard forgive
 function collectModelIds(value, provider, target, depth = 0) {
+  // #lizard forgive
   if (depth > 8 || value == null) return
 
   if (typeof value === 'string') {
@@ -423,13 +359,8 @@ function collectModelIds(value, provider, target, depth = 0) {
       } catch {}
     }
 
-    const modelKeyRe = /["'](?:model|model_slug|slug|id|name)["']\s*:\s*["']([a-zA-Z0-9][\w.:-]{1,95})["']/g
-    for (const match of trimmed.matchAll(modelKeyRe)) addModelCandidate(target, provider, match[1])
-
-    const directPatterns = {
-      chatgpt: /\b(?:gpt|o[0-9]|chatgpt)[a-zA-Z0-9_.:-]{1,80}\b/g,
-    }
-    for (const match of trimmed.matchAll(directPatterns[provider] || /\b[a-z][a-z0-9_.:-]{1,80}\b/g)) {
+    for (const match of trimmed.matchAll(MODEL_KEY_RE)) addModelCandidate(target, provider, match[1])
+    for (const match of trimmed.matchAll(DIRECT_MODEL_PATTERNS[provider] || GENERIC_MODEL_SCAN_RE)) {
       addModelCandidate(target, provider, match[0])
     }
     return
@@ -700,47 +631,6 @@ function chatGPTInitKey(params = {}) {
 const CHATGPT_INPUT_SELECTOR = 'textarea:visible, #prompt-textarea:visible, div[contenteditable="true"]:visible'
 const CHATGPT_SEND_SELECTOR = 'button[data-testid="send-button"]:visible, button[aria-label="Send prompt"]:visible'
 
-async function chatGPTComposerText(composer) {
-  return (await composer.inputValue().catch(async () => composer.innerText().catch(() => ''))).trim()
-}
-
-async function submitChatGPTPrompt(page, composer) {
-  // Prefer the send button, but only once it's actually enabled. With an image
-  // attachment ChatGPT keeps send disabled until the upload finishes, and a
-  // premature Enter just inserts a newline in the ProseMirror composer instead
-  // of sending — so wait for the button rather than firing Enter first.
-  // Headless uploads can be slow; give it a full minute.
-  const deadline = Date.now() + 60000
-  while (Date.now() < deadline) {
-    const sendButton = page.locator(CHATGPT_SEND_SELECTOR).last()
-    const ready = await sendButton.count()
-      && await sendButton.isVisible().catch(() => false)
-      && !await sendButton.isDisabled().catch(() => true)
-    if (ready) {
-      await sendButton.click({ force: true }).catch(() => {})
-      for (let attempt = 0; attempt < 20; attempt += 1) {
-        if (!await chatGPTComposerText(composer)) {
-          bridgeDebug('chatgpt prompt submitted via send button')
-          return
-        }
-        await sleep(250)
-      }
-    }
-    await sleep(300)
-  }
-
-  // Last resort once the upload window has passed: keyboard submit.
-  await composer.press('Enter').catch(() => {})
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    if (!await chatGPTComposerText(composer)) {
-      bridgeDebug('chatgpt prompt submitted via keyboard')
-      return
-    }
-    await sleep(200)
-  }
-  throw new Error('ChatGPT composer did not submit prompt')
-}
-
 async function ensureChatGPTInteractivePage({ runtime_dir, browser } = {}) {
   let page = state.chatgpt.page
   if (!page) throw new Error('ChatGPT Playwright not initialized')
@@ -782,6 +672,39 @@ async function initChatGPT(params = {}) {
   }
 }
 
+function chatGPTRequestHeaders(requestHeaders) {
+  const value = key => requestHeaders[key] || ''
+  return {
+    authorization: value('authorization'),
+    accept: requestHeaders.accept || 'text/event-stream',
+    'accept-language': requestHeaders['accept-language'] || 'en-US,en;q=0.9',
+    'content-type': requestHeaders['content-type'] || 'application/json',
+    origin: requestHeaders.origin || 'https://chatgpt.com',
+    referer: requestHeaders.referer || 'https://chatgpt.com/',
+    'user-agent': value('user-agent'),
+    'oai-client-build-number': value('oai-client-build-number'),
+    'oai-client-version': value('oai-client-version'),
+    'oai-device-id': value('oai-device-id'),
+    'oai-language': requestHeaders['oai-language'] || 'en-US',
+    'oai-session-id': value('oai-session-id'),
+    'openai-sentinel-chat-requirements-token': value('openai-sentinel-chat-requirements-token'),
+    'openai-sentinel-proof-token': value('openai-sentinel-proof-token'),
+    'openai-sentinel-turnstile-token': value('openai-sentinel-turnstile-token'),
+    'x-conduit-token': value('x-conduit-token'),
+    'x-oai-turn-trace-id': value('x-oai-turn-trace-id'),
+    'x-openai-target-path': requestHeaders['x-openai-target-path'] || '/backend-api/f/conversation',
+    'x-openai-target-route': requestHeaders['x-openai-target-route'] || '/backend-api/f/conversation',
+  }
+}
+
+function chatGPTPayloadModel(postData) {
+  try {
+    return JSON.parse(postData).model || 'chatgpt-web-session'
+  } catch {
+    return 'chatgpt-web-session'
+  }
+}
+
 async function captureChatGPTTemplate(forceNew = false) {
   await ensureLiveChatGPTSession()
 
@@ -803,33 +726,7 @@ async function captureChatGPTTemplate(forceNew = false) {
       clearTimeout(timeout)
       const reqHeaders = request.headers()
       const postData = request.postData() || ''
-      let payloadModel = 'chatgpt-web-session'
-
-      try {
-        payloadModel = JSON.parse(postData).model || payloadModel
-      } catch {}
-
-      const headers = {
-        authorization: reqHeaders.authorization || '',
-        accept: reqHeaders.accept || 'text/event-stream',
-        'accept-language': reqHeaders['accept-language'] || 'en-US,en;q=0.9',
-        'content-type': reqHeaders['content-type'] || 'application/json',
-        origin: reqHeaders.origin || 'https://chatgpt.com',
-        referer: reqHeaders.referer || 'https://chatgpt.com/',
-        'user-agent': reqHeaders['user-agent'] || '',
-        'oai-client-build-number': reqHeaders['oai-client-build-number'] || '',
-        'oai-client-version': reqHeaders['oai-client-version'] || '',
-        'oai-device-id': reqHeaders['oai-device-id'] || '',
-        'oai-language': reqHeaders['oai-language'] || 'en-US',
-        'oai-session-id': reqHeaders['oai-session-id'] || '',
-        'openai-sentinel-chat-requirements-token': reqHeaders['openai-sentinel-chat-requirements-token'] || '',
-        'openai-sentinel-proof-token': reqHeaders['openai-sentinel-proof-token'] || '',
-        'openai-sentinel-turnstile-token': reqHeaders['openai-sentinel-turnstile-token'] || '',
-        'x-conduit-token': reqHeaders['x-conduit-token'] || '',
-        'x-oai-turn-trace-id': reqHeaders['x-oai-turn-trace-id'] || '',
-        'x-openai-target-path': reqHeaders['x-openai-target-path'] || '/backend-api/f/conversation',
-        'x-openai-target-route': reqHeaders['x-openai-target-route'] || '/backend-api/f/conversation',
-      }
+      const headers = chatGPTRequestHeaders(reqHeaders)
 
       if (!headers.authorization) {
         await route.continue()
@@ -839,7 +736,7 @@ async function captureChatGPTTemplate(forceNew = false) {
       state.chatgpt.cachedHeaders = {
         headers,
         payload: postData,
-        model: payloadModel,
+        model: chatGPTPayloadModel(postData),
         url: request.url(),
       }
       state.chatgpt.lastHeadersTime = Date.now()
@@ -973,60 +870,55 @@ function compactChatGPTPrompt(prompt, maxChars = 18000) {
   return compactStructuredPrompt(prompt, { maxChars })
 }
 
-function buildChatGPTPayloadFromTemplate(template, prompt, model, webSearch, systemPrompt, session = null) {
-  let payload = null
+function parseJson(value) {
+  if (!value) return null
   try {
-    payload = template?.payload ? JSON.parse(template.payload) : null
-  } catch {}
-
-  if (!payload || typeof payload !== 'object') {
-    return buildChatGPTPayload(prompt, model, webSearch, systemPrompt)
+    return JSON.parse(value)
+  } catch {
+    return null
   }
+}
 
-  const nextPayload = cloneJson(payload)
-  const messages = Array.isArray(nextPayload.messages) ? nextPayload.messages : []
-  const templateMessage = messages.find((message) => message?.author?.role === 'user') || messages[0] || {}
-  const templateMetadata =
-    templateMessage?.metadata && typeof templateMessage.metadata === 'object'
-      ? templateMessage.metadata
-      : {}
+function parseChatGPTTemplate(template) {
+  return parseJson(template?.payload)
+}
 
-  nextPayload.model = model
-  delete nextPayload.conversation_id
-  delete nextPayload.conversationId
-  delete nextPayload.current_node
-  delete nextPayload.currentNode
-  delete nextPayload.parent_id
-  delete nextPayload.parentId
-  delete nextPayload.response_id
-  delete nextPayload.responseId
-  delete nextPayload.suggestions
-  delete nextPayload.history_and_training_disabled
+function resetChatGPTPayload(payload) {
+  for (const key of [
+    'conversation_id', 'conversationId', 'current_node', 'currentNode', 'parent_id',
+    'parentId', 'response_id', 'responseId', 'suggestions', 'history_and_training_disabled',
+  ]) delete payload[key]
+}
 
-  const builtMessages = []
-  builtMessages.push({
+function buildChatGPTTemplateMessage(templateMessage, templateMetadata, prompt, systemPrompt, webSearch) {
+  return {
     ...templateMessage,
     id: randomUUID(),
     create_time: Date.now() / 1000,
     author: { ...(templateMessage.author || {}), role: 'user' },
-    content: replaceChatGPTMessageContent(
-      templateMessage.content,
-      foldChatGPTSystemPrompt(systemPrompt, prompt),
-    ),
-    metadata: {
-      ...templateMetadata,
-      selected_sources: webSearch ? ['web'] : [],
-    },
-  })
-  nextPayload.messages = builtMessages
-
-  applyChatGPTConversationSession(nextPayload, session)
-  if (!nextPayload.action || typeof nextPayload.action !== 'string') {
-    nextPayload.action = 'next'
+    content: replaceChatGPTMessageContent(templateMessage.content, foldChatGPTSystemPrompt(systemPrompt, prompt)),
+    metadata: { ...templateMetadata, selected_sources: webSearch ? ['web'] : [] },
   }
-  if (webSearch) nextPayload.force_use_tool = 'web'
+}
 
-  return nextPayload
+function finalizeChatGPTPayload(payload, session, webSearch) {
+  applyChatGPTConversationSession(payload, session)
+  if (!payload.action || typeof payload.action !== 'string') payload.action = 'next'
+  if (webSearch) payload.force_use_tool = 'web'
+  return payload
+}
+
+function buildChatGPTPayloadFromTemplate({ template, prompt, model, webSearch, systemPrompt, session = null }) {
+  const payload = parseChatGPTTemplate(template)
+  if (!payload || typeof payload !== 'object') return buildChatGPTPayload(prompt, model, webSearch, systemPrompt)
+  const nextPayload = cloneJson(payload)
+  const messages = Array.isArray(nextPayload.messages) ? nextPayload.messages : []
+  const templateMessage = messages.find((message) => message?.author?.role === 'user') || messages[0] || {}
+  const templateMetadata = templateMessage?.metadata && typeof templateMessage.metadata === 'object' ? templateMessage.metadata : {}
+  nextPayload.model = model
+  resetChatGPTPayload(nextPayload)
+  nextPayload.messages = [buildChatGPTTemplateMessage(templateMessage, templateMetadata, prompt, systemPrompt, webSearch)]
+  return finalizeChatGPTPayload(nextPayload, session, webSearch)
 }
 
 async function listChatGPTModels() {
@@ -1091,324 +983,151 @@ async function listChatGPTHybridModels() {
   }
 }
 
-async function chatChatGPTWeb({ model, prompt, system_prompt, web_search = false, session_id = null }, emitStream = null) {
-  await ensureLiveChatGPTSession()
-  const page = state.chatgpt.page
-  if (!page) throw new Error('ChatGPT Playwright not initialized')
+async function sendChatGPTConversation(context) {
+  const { page, template, model, web_search, system_prompt, session, preparedPrompt, emitStream } = context
+  const requestHeaders = { ...template.headers }
+  delete requestHeaders.cookie
+  const payload = buildChatGPTPayloadFromTemplate({
+    template,
+    prompt: preparedPrompt.text,
+    model: ensureSessionText(model, template.model || 'chatgpt-web-session'),
+    webSearch: web_search,
+    systemPrompt: system_prompt || null,
+    session,
+  })
+  const requestResult = await page.evaluate(CHATGPT_PAGE_REQUEST, {
+    headers: requestHeaders,
+    payload,
+    submittedPrompt: preparedPrompt.text,
+    stream: Boolean(emitStream),
+  })
+  if (process.env.RUST_PROXY_DUMP_CHATGPT_SSE === '1' && requestResult.body) {
+    fs.writeFileSync('/tmp/solvethisquestion-login-fix/chatgpt-sse-debug.txt', requestResult.body)
+  }
+  bridgeDebug(`chatgpt conversation submit status=${requestResult.status} conversation=${Boolean(requestResult.conversationId)} bytes=${requestResult.body?.length || 0} sse=${requestResult.body?.includes('data:') || false} stream=${Boolean(requestResult.streamText)} shape=${JSON.stringify(requestResult.streamShape || {})}`)
+  return { payload, requestResult, preparedPrompt }
+}
 
-  let template = await captureChatGPTTemplate(false)
-  const sessionKey = chatGPTSessionKey(session_id)
-  let session = state.chatgpt.webSessions.get(sessionKey) || chatGPTSessionFromTemplate(template)
-  if (session) state.chatgpt.webSessions.set(sessionKey, session)
+function normalizeChatGPTPrompt(prompt, web_search) {
+  const normalized = prompt.replace(/@WebSearch\b/gi, '@Web search')
+  return web_search && !/@Web search\s*$/i.test(normalized.trim())
+    ? `${normalized.trim()}\n\n@Web search`
+    : normalized
+}
 
-  const sendConversation = async (preparedPrompt) => {
-    const requestHeaders = { ...template.headers }
-    delete requestHeaders.cookie
-    const payload = buildChatGPTPayloadFromTemplate(
-      template,
-      preparedPrompt.text,
-      ensureSessionText(model, template.model || 'chatgpt-web-session'),
-      web_search,
-      system_prompt || null,
-      session,
-    )
-    const requestResult = await page.evaluate(async ({ headers, payload, submittedPrompt, stream }) => {
-      const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), 240000)
-      const response = await fetch('https://chatgpt.com/backend-api/f/conversation', {
-        method: 'POST',
-        credentials: 'include',
-        headers,
-        body: JSON.stringify(payload),
-        signal: controller.signal,
-      })
-      const reader = response.body?.getReader()
-      const decoder = new TextDecoder()
-      let raw = ''
-      let lineBuffer = ''
-      let streamedText = ''
-      let streamedModel = ''
-      let streamedReasoning = ''
-      let conversationId = ''
-      const streamRoles = []
-      const streamContentTypes = []
-      const streamKeys = []
-      const streamMessageShapes = []
+async function sendChatGPTWithRetries(context) {
+  let { template, session } = context
+  const send = preparedPrompt => sendChatGPTConversation({ ...context, template, session, preparedPrompt })
+  let sent = await send(compactChatGPTPrompt(context.prompt, 18000))
+  if (sent.requestResult.status === 401 || sent.requestResult.status === 403) {
+    template = await captureChatGPTTemplate(true)
+    session = state.chatgpt.webSessions.get(context.sessionKey) || chatGPTSessionFromTemplate(template)
+    if (session) state.chatgpt.webSessions.set(context.sessionKey, session)
+    sent = await send(compactChatGPTPrompt(context.prompt, 18000))
+  }
+  if (sent.requestResult.status === 413) sent = await send(compactChatGPTPrompt(context.prompt, 9000))
+  return { template, session, sent }
+}
 
-      const collectText = (value, output = [], acceptsText = false, depth = 0) => {
-        if (depth > 12 || value == null) return output
-        if (typeof value === 'string') {
-          if (acceptsText && value.trim()) output.push(value)
-          return output
-        }
-        if (Array.isArray(value)) {
-          for (const item of value) collectText(item, output, acceptsText, depth + 1)
-          return output
-        }
-        if (typeof value === 'object') {
-          for (const [key, child] of Object.entries(value)) {
-            collectText(child, output, ['content', 'output_text', 'parts', 'text'].includes(key), depth + 1)
-          }
-        }
-        return output
-      }
-      const assistantText = (payload) => {
-        const mapping = payload?.mapping && typeof payload.mapping === 'object' ? Object.values(payload.mapping) : []
-        const messages = [
-          ...(payload?.message?.author?.role === 'assistant' ? [payload.message] : []),
-          ...mapping.map(entry => entry?.message),
-        ]
-          .filter((message, index, all) => message?.author?.role === 'assistant' && all.indexOf(message) === index)
-          .sort((left, right) => (left?.create_time || 0) - (right?.create_time || 0))
-        const message = messages.at(-1)
-        const promptText = String(submittedPrompt || '').replace(/\s+/g, ' ').trim()
-        return collectText(message?.content)
-          .join('\n')
-          .split(/\r?\n/)
-          .map(line => line.replace(/\s+/g, ' ').trim())
-          .filter(Boolean)
-          .filter(line => !/^worked for\b/i.test(line) && !/^modified \d+ files?\b/i.test(line))
-          .filter(line => !promptText || line !== promptText)
-          .join('\n')
-          .trim()
-      }
-      const assistantModel = (payload) => {
-        const mapping = payload?.mapping && typeof payload.mapping === 'object' ? Object.values(payload.mapping) : []
-        const messages = [
-          ...(payload?.message?.author?.role === 'assistant' ? [payload.message] : []),
-          ...mapping.map(entry => entry?.message),
-        ]
-          .filter(message => message?.author?.role === 'assistant')
-          .sort((left, right) => (left?.create_time || 0) - (right?.create_time || 0))
-        const message = messages.at(-1)
-        for (const candidate of [
-          message?.metadata?.model_slug,
-          message?.metadata?.model,
-          message?.content?.model_slug,
-          message?.content?.model,
-          message?.model_slug,
-          message?.model,
-          payload?.metadata?.model_slug,
-          payload?.metadata?.model,
-          payload?.model_slug,
-          payload?.model,
-        ]) {
-          if (typeof candidate === 'string' && candidate.trim()) return candidate.trim()
-        }
+function conversationIdFrom(sent) {
+  return sent.requestResult.conversationId || sent.payload.conversation_id || ''
+}
+
+function assertChatGPTConversation(sent, conversationId) {
+  if (sent.requestResult.ok && conversationId) return
+  const detail = sent.requestResult.body?.trim()
+  const suffix = detail ? `: ${detail.slice(0, 400)}` : ''
+  throw new Error(`ChatGPT upstream request failed with status ${sent.requestResult.status}${suffix}`)
+}
+
+async function readChatGPTConversation({ page, conversationId, responseHeaders, previousAssistantMessageId, prompt }) {
+  return waitForChatGPTResponse({
+    read: () => page.context().request.get(
+      `https://chatgpt.com/backend-api/conversation/${conversationId}`,
+      { headers: responseHeaders, timeout: 10000 },
+    ),
+    extractText: body => {
+      try {
+        const payload = JSON.parse(body)
+        if (previousAssistantMessageId && latestChatGPTAssistantMessageId(payload) === previousAssistantMessageId) return ''
+        return extractChatGPTAssistantText(payload, prompt)
+      } catch {
         return ''
       }
-      const assistantReasoning = (payload, output = [], acceptsText = false, depth = 0) => {
-        if (depth > 12 || payload == null) return output.join('\n').trim()
-        if (typeof payload === 'string') {
-          if (acceptsText && payload.trim()) output.push(payload)
-          return output.join('\n').trim()
-        }
-        if (Array.isArray(payload)) {
-          for (const item of payload) assistantReasoning(item, output, acceptsText, depth + 1)
-          return output.join('\n').trim()
-        }
-        if (typeof payload === 'object') {
-          for (const [key, value] of Object.entries(payload)) {
-            assistantReasoning(value, output, acceptsText || ['reasoning', 'reasoning_content', 'summary', 'thoughts'].includes(key), depth + 1)
-          }
-        }
-        return output.join('\n').trim()
+    },
+    onAttempt: (status, attempt) => {
+      if (attempt === 1 || [401, 403].includes(status)) {
+        bridgeDebug(`chatgpt conversation poll status=${status} attempt=${attempt}`)
       }
-      const emitDelta = async (payload) => {
-        const current = assistantText(payload)
-        if (!current) return
-        const delta = current.startsWith(streamedText) ? current.slice(streamedText.length) : current
-        streamedText = current
-        if (!stream || typeof globalThis.__rustProxyHubStream !== 'function') return
-        if (delta) await globalThis.__rustProxyHubStream({ type: 'delta', delta })
-      }
-      const emitReasoning = async (payload) => {
-        const current = assistantReasoning(payload?.message?.content || payload)
-        if (!current) return
-        const delta = current.startsWith(streamedReasoning) ? current.slice(streamedReasoning.length) : current
-        streamedReasoning = current
-        if (!stream || typeof globalThis.__rustProxyHubStream !== 'function') return
-        if (delta) await globalThis.__rustProxyHubStream({ type: 'reasoning', delta })
-      }
+    },
+  })
+}
 
-      if (reader) {
-        try {
-          while (true) {
-            let chunk
-            try {
-              chunk = await reader.read()
-            } catch (error) {
-              if (conversationId) break
-              throw error
-            }
-            const { done, value } = chunk
-            if (done) break
-            const decoded = decoder.decode(value, { stream: true })
-            raw = `${raw}${decoded}`.slice(-16_384)
-            lineBuffer += decoded
-            const lines = lineBuffer.split('\n')
-            lineBuffer = lines.pop() || ''
-            for (const line of lines) {
-              const trimmed = line.trim()
-              if (!trimmed.startsWith('data:')) continue
-              const chunk = trimmed.slice(5).trim()
-              if (!chunk || chunk === '[DONE]') continue
-              try {
-                const parsed = JSON.parse(chunk)
-                for (const key of Object.keys(parsed || {})) {
-                  if (!streamKeys.includes(key)) streamKeys.push(key)
-                }
-                const role = parsed?.message?.author?.role
-                const contentType = parsed?.message?.content?.content_type
-                const messageShape = parsed?.message && typeof parsed.message === 'object'
-                  ? Object.keys(parsed.message).slice(0, 12).join(',')
-                  : typeof parsed?.message
-                if (messageShape && !streamMessageShapes.includes(messageShape)) streamMessageShapes.push(messageShape)
-                if (role && !streamRoles.includes(role)) streamRoles.push(role)
-                if (contentType && !streamContentTypes.includes(contentType)) streamContentTypes.push(contentType)
-                conversationId =
-                  parsed.conversation_id ||
-                  parsed.token?.conversation_id ||
-                  parsed.options?.[0]?.conversation_id ||
-                  conversationId
-                streamedModel = assistantModel(parsed) || streamedModel
-                await emitReasoning(parsed)
-                await emitDelta(parsed)
-              } catch {}
-            }
-          }
-        } finally {
-          await reader.cancel().catch(() => {})
-        }
-      }
+function parseConversation(conversation) {
+  return parseJson(conversation.body)
+}
 
-      clearTimeout(timer)
-      const upstreamCache = {}
-      for (const name of ['cache-control', 'age', 'cf-cache-status']) {
-        const value = response.headers.get(name)
-        if (value) upstreamCache[name] = value
-      }
-      return {
-        ok: response.ok,
-        status: response.status,
-        conversationId,
-        body: raw,
-        streamModel: streamedModel,
-        streamReasoning: streamedReasoning,
-        streamText: streamedText,
-        streamShape: { keys: streamKeys, roles: streamRoles, content_types: streamContentTypes, messages: streamMessageShapes },
-        upstream_cache: Object.keys(upstreamCache).length ? upstreamCache : null,
-      }
-    }, { headers: requestHeaders, payload, submittedPrompt: preparedPrompt.text, stream: Boolean(emitStream) })
-    if (process.env.RUST_PROXY_DUMP_CHATGPT_SSE === '1' && requestResult.body) {
-      fs.writeFileSync('/tmp/solvethisquestion-login-fix/chatgpt-sse-debug.txt', requestResult.body)
-    }
-    bridgeDebug(`chatgpt conversation submit status=${requestResult.status} conversation=${Boolean(requestResult.conversationId)} bytes=${requestResult.body?.length || 0} sse=${requestResult.body?.includes('data:') || false} stream=${Boolean(requestResult.streamText)} shape=${JSON.stringify(requestResult.streamShape || {})}`)
-    return { payload, requestResult, preparedPrompt }
-  }
+function logConversationShape(payload) {
+  const entries = payload?.mapping && typeof payload.mapping === 'object' ? Object.values(payload.mapping) : []
+  bridgeDebug(`chatgpt conversation shape keys=${Object.keys(payload || {}).slice(0, 12).join(',')} roles=${entries.map(entry => entry?.message?.author?.role).filter(Boolean).join(',') || 'none'}`)
+}
 
-  const normalizedPrompt = prompt.replace(/@WebSearch\b/gi, '@Web search')
-  const preparedUserPrompt = web_search && !/@Web search\s*$/i.test(normalizedPrompt.trim())
-    ? `${normalizedPrompt.trim()}\n\n@Web search`
-    : normalizedPrompt
-  let sent = await sendConversation(compactChatGPTPrompt(preparedUserPrompt, 18000))
-  if (!sent.requestResult.ok && [401, 403].includes(sent.requestResult.status)) {
-    template = await captureChatGPTTemplate(true)
-    session = state.chatgpt.webSessions.get(sessionKey) || chatGPTSessionFromTemplate(template)
-    if (session) state.chatgpt.webSessions.set(sessionKey, session)
-    sent = await sendConversation(compactChatGPTPrompt(preparedUserPrompt, 18000))
+function updateChatGPTSession(sessionKey, conversationId, payload, sent) {
+  if (!sessionKey) return
+  const parentMessageId = latestChatGPTAssistantMessageId(payload) || sent.requestResult.streamMessageId || ''
+  if (parentMessageId) {
+    state.chatgpt.webSessions.set(sessionKey, { conversation_id: conversationId, parent_message_id: parentMessageId, updated_at: Date.now() })
+  } else if (!sent.requestResult.streamText) {
+    state.chatgpt.webSessions.delete(sessionKey)
   }
-  if (!sent.requestResult.ok && sent.requestResult.status === 413) {
-    sent = await sendConversation(compactChatGPTPrompt(preparedUserPrompt, 9000))
-  }
+  persistChatGPTWebSessions()
+}
 
-  const conversationId = sent.requestResult.conversationId || sent.payload.conversation_id || ''
-  if (!sent.requestResult.ok || !conversationId) {
-    const detail = sent.requestResult.body?.trim()
-    throw new Error(
-      detail
-        ? `ChatGPT upstream request failed with status ${sent.requestResult.status}: ${detail.slice(0, 400)}`
-        : `ChatGPT upstream request failed with status ${sent.requestResult.status}`,
-    )
-  }
-
-  let responseHeaders = { ...template.headers }
-  delete responseHeaders.cookie
-  const readConversation = async () => {
-    let lastStatus = 0
-    for (let attempt = 0; attempt < 60; attempt += 1) {
-      const response = await page.context().request.get(
-        `https://chatgpt.com/backend-api/conversation/${conversationId}`,
-        { headers: responseHeaders, timeout: 10000 },
-      ).catch(() => null)
-      const status = response?.status() || 0
-      if (attempt === 0 || [401, 403].includes(status)) {
-        bridgeDebug(`chatgpt conversation poll status=${status} attempt=${attempt + 1}`)
-      }
-      if (response?.ok()) {
-        const text = await response.text()
-        if (text && text !== 'null') return { body: text, status }
-      }
-      lastStatus = status
-      if ([401, 403].includes(status)) return { body: '', status }
-      await sleep(1000)
-    }
-    return { body: '', status: lastStatus }
-  }
-
-  let conversation = await readConversation()
-  bridgeDebug(`chatgpt conversation read status=${conversation.status} bytes=${conversation.body?.length || 0}`)
-  if ([401, 403].includes(conversation.status)) {
-    template = await captureChatGPTTemplate(true)
-    responseHeaders = { ...template.headers }
-    delete responseHeaders.cookie
-    conversation = await readConversation()
-    bridgeDebug(`chatgpt conversation reread status=${conversation.status} bytes=${conversation.body?.length || 0}`)
-  }
-  if ([401, 403].includes(conversation.status)) {
-    throw new Error(`ChatGPT web conversation read unauthorized (HTTP ${conversation.status})`)
-  }
-
-  let conversationPayload = null
-  try {
-    conversationPayload = conversation.body ? JSON.parse(conversation.body) : null
-  } catch {}
-  const conversationEntries = conversationPayload?.mapping && typeof conversationPayload.mapping === 'object'
-    ? Object.values(conversationPayload.mapping)
-    : []
-  bridgeDebug(`chatgpt conversation shape keys=${Object.keys(conversationPayload || {}).slice(0, 12).join(',')} roles=${conversationEntries.map(entry => entry?.message?.author?.role).filter(Boolean).join(',') || 'none'}`)
-  if (sessionKey) {
-    const parentMessageId = latestChatGPTAssistantMessageId(conversationPayload)
-    if (parentMessageId) {
-      state.chatgpt.webSessions.set(sessionKey, {
-        conversation_id: conversationId,
-        parent_message_id: parentMessageId,
-        updated_at: Date.now(),
-      })
-      persistChatGPTWebSessions()
-    } else {
-      state.chatgpt.webSessions.delete(sessionKey)
-      persistChatGPTWebSessions()
-    }
-  }
-  const text = extractChatGPTAssistantText(conversationPayload, sent.preparedPrompt.text)
-    || sent.requestResult.streamText
-  const reasoningContent = extractChatGPTAssistantReasoning(conversationPayload)
-    || sent.requestResult.streamReasoning
-  if (!text) {
-    throw new Error('ChatGPT response was empty. Confirm session is active, then retry.')
-  }
-
+function buildChatGPTResult(payload, sent, conversationId) {
+  const text = extractChatGPTAssistantText(payload, sent.preparedPrompt.text) || sent.requestResult.streamText
+  const reasoningContent = extractChatGPTAssistantReasoning(payload) || sent.requestResult.streamReasoning
+  if (!text) throw new Error('ChatGPT response was empty. Confirm session is active, then retry.')
   return {
     text,
-    model: extractChatGPTAssistantModel(conversationPayload)
-      || sent.requestResult.streamModel
-      || sent.payload.model,
+    model: extractChatGPTAssistantModel(payload) || sent.requestResult.streamModel || sent.payload.model,
     reasoning_content: reasoningContent || null,
     conversation_id: conversationId,
     upstream_cache: sent.requestResult.upstream_cache,
     warning: summarizePromptCompaction(sent.preparedPrompt),
   }
+}
+
+async function chatChatGPTWeb({ model, prompt, system_prompt, web_search = false, session_id = null }, emitStream = null) {
+  await ensureLiveChatGPTSession()
+  const page = state.chatgpt.page
+  if (!page) throw new Error('ChatGPT Playwright not initialized')
+  const template = await captureChatGPTTemplate(false)
+  const sessionKey = chatGPTSessionKey(session_id)
+  const session = state.chatgpt.webSessions.get(sessionKey) || chatGPTSessionFromTemplate(template)
+  if (session) state.chatgpt.webSessions.set(sessionKey, session)
+  const context = { page, template, session, sessionKey, model, web_search, system_prompt, emitStream, prompt: normalizeChatGPTPrompt(prompt, web_search) }
+  const sentState = await sendChatGPTWithRetries(context)
+  const { sent } = sentState
+  const conversationId = conversationIdFrom(sent)
+  assertChatGPTConversation(sent, conversationId)
+  let responseHeaders = { ...sentState.template.headers }
+  delete responseHeaders.cookie
+  let conversation = sent.requestResult.streamText
+    ? { body: '', status: 200 }
+    : await readChatGPTConversation({ page, conversationId, responseHeaders, previousAssistantMessageId: sentState.session?.parent_message_id || '', prompt: sent.preparedPrompt.text })
+  bridgeDebug(`chatgpt conversation read status=${conversation.status} bytes=${conversation.body?.length || 0}`)
+  if ([401, 403].includes(conversation.status)) {
+    const refreshed = await captureChatGPTTemplate(true)
+    responseHeaders = { ...refreshed.headers }
+    delete responseHeaders.cookie
+    conversation = await readChatGPTConversation({ page, conversationId, responseHeaders, previousAssistantMessageId: sentState.session?.parent_message_id || '', prompt: sent.preparedPrompt.text })
+    bridgeDebug(`chatgpt conversation reread status=${conversation.status} bytes=${conversation.body?.length || 0}`)
+  }
+  if ([401, 403].includes(conversation.status)) throw new Error(`ChatGPT web conversation read unauthorized (HTTP ${conversation.status})`)
+  const payload = parseConversation(conversation)
+  logConversationShape(payload)
+  updateChatGPTSession(sessionKey, conversationId, payload, sent)
+  return buildChatGPTResult(payload, sent, conversationId)
 }
 
 async function chatChatGPT({ model, prompt, system_prompt, web_search = false, session_id = null }, emitStream = null) {
@@ -1495,74 +1214,77 @@ async function startNewChat(page) {
   return page
 }
 
-async function sendImageAndReadAnswer(page, { image_path, prompt, web_search }) {
+async function selectChatGPTPage() {
+  return state.chatgpt.context.pages().find((candidate) => !candidate.isClosed() && isOnHost(candidate.url(), 'chatgpt.com'))
+    || state.chatgpt.context.pages().find((candidate) => !candidate.isClosed())
+    || await state.chatgpt.context.newPage()
+}
+
+async function prepareImagePage(page, image_path, web_search) {
   const fileInput = page.locator('input[type="file"]').first()
   if (await fileInput.count() === 0) throw new Error('ChatGPT image upload control not found')
   await fileInput.setInputFiles(image_path)
   await sleep(500)
-  page = state.chatgpt.context.pages().find((candidate) => !candidate.isClosed() && isOnHost(candidate.url(), 'chatgpt.com'))
-    || state.chatgpt.context.pages().find((candidate) => !candidate.isClosed())
-    || await state.chatgpt.context.newPage()
+  page = await selectChatGPTPage()
   if (!isOnHost(page.url(), 'chatgpt.com')) {
     await page.goto('https://chatgpt.com/', { waitUntil: 'domcontentloaded' })
   }
-
-  // Think (reasoning) mode roughly triples latency; keep it off unless asked.
   if (envBool('SCREEN_AGENT_CHATGPT_THINK', false)) await enableThinkMode(page)
+  if (web_search) await enableWebSearch(page)
+  return page
+}
 
-  if (web_search) {
-    const searchButton = page.getByRole('button', { name: /search( the web)?/i }).first()
-    if (await searchButton.count() && await searchButton.isVisible().catch(() => false)) {
-      await searchButton.click().catch(() => {})
-    }
+async function enableWebSearch(page) {
+  const searchButton = page.getByRole('button', { name: /search( the web)?/i }).first()
+  if (await searchButton.count() && await searchButton.isVisible().catch(() => false)) {
+    await searchButton.click().catch(() => {})
   }
+}
+
+function imagePrompt(prompt, web_search) {
+  const normalized = prompt.replace(/@WebSearch\b/gi, '@Web search')
+  return web_search && !/@Web search\s*$/i.test(normalized.trim())
+    ? `${normalized.trim()}\n\n@Web search`
+    : normalized
+}
+
+async function sendImageAndReadAnswer(options) {
+  const { page: initialPage, image_path, prompt, web_search } = options
+  let page = await prepareImagePage(initialPage, image_path, web_search)
 
   const assistantMessages = page.locator('[data-message-author-role="assistant"]')
   const beforeCount = await assistantMessages.count()
   const composer = page.locator(CHATGPT_INPUT_SELECTOR).first()
   await composer.waitFor({ state: 'visible', timeout: 30000 })
-  const normalizedPrompt = prompt.replace(/@WebSearch\b/gi, '@Web search')
-  const message = web_search && !/@Web search\s*$/i.test(normalizedPrompt.trim())
-    ? `${normalizedPrompt.trim()}\n\n@Web search`
-    : normalizedPrompt
-  await composer.fill(message)
-  await submitChatGPTPrompt(page, composer)
+  await composer.fill(imagePrompt(prompt, web_search))
+  await submitChatGPTPrompt({ page, composer,
+    selector: CHATGPT_SEND_SELECTOR,
+    onSubmitted: method => bridgeDebug(`chatgpt prompt submitted via ${method}`),
+  })
 
   // Wait for the assistant reply to finish streaming, then capture it whole.
-  // All timings env-configurable (ms): total cap, and how long the text must
-  // hold steady before we treat it as done.
+  // A truly empty reply gets one fresh-chat retry after 10 seconds.
   const answerTimeout = Number(process.env.SCREEN_AGENT_ANSWER_TIMEOUT_MS || 180000)
+  const emptyRetryTimeout = Number(process.env.SCREEN_AGENT_EMPTY_ANSWER_RETRY_TIMEOUT_MS || DEFAULT_EMPTY_ANSWER_RETRY_TIMEOUT_MS)
   const stableMs = Number(process.env.SCREEN_AGENT_ANSWER_STABLE_MS || 2500)
   // Code streams in bursts with long pauses between them; a short stability
   // window mistakes a mid-block pause for completion and crops the code. Hold
   // out much longer whenever a code fence is present so it lands complete.
   const codeStableMs = Number(process.env.SCREEN_AGENT_ANSWER_CODE_STABLE_MS || 8000)
   const stopButton = page.locator('button[data-testid="stop-button"], button[aria-label="Stop streaming"]')
-  const deadline = Date.now() + answerTimeout
-  let answer = ''
-  let lastText = ''
-  let lastChange = Date.now()
-  while (Date.now() < deadline) {
-    if (await assistantMessages.count() > beforeCount) {
-      const text = (await assistantMessages.last().innerText().catch(() => '')).trim()
-      if (text !== lastText) {
-        lastText = text
-        lastChange = Date.now()
-      } else if (text) {
-        // Not done until ChatGPT drops its stop button (streaming ended) AND the
-        // text has held steady — a wider window when a code block is present.
-        const streaming = await stopButton.count() && await stopButton.first().isVisible().catch(() => false)
-        const window = text.includes('```') ? codeStableMs : stableMs
-        if (!streaming && Date.now() - lastChange >= window) {
-          answer = text
-          break
-        }
-      }
-    }
-    await sleep(500)
-  }
-  if (!answer) answer = lastText
-  return { page, answer }
+  const waited = await waitForAssistantAnswer({
+    read: async () => {
+      if (await assistantMessages.count() <= beforeCount) return { text: '', streaming: false }
+      const text = await assistantMessages.last().innerText().catch(() => '')
+      const streaming = await stopButton.count() && await stopButton.first().isVisible().catch(() => false)
+      return { text, streaming }
+    },
+    answerTimeoutMs: answerTimeout,
+    emptyRetryTimeoutMs: emptyRetryTimeout,
+    stableMs,
+    codeStableMs,
+  })
+  return { page, answer: waited.answer, retry: waited.retry }
 }
 
 async function chatChatGPTWithImage({ runtime_dir, browser, image_path, prompt, web_search = false, headless = true }) {
@@ -1573,7 +1295,7 @@ async function chatChatGPTWithImage({ runtime_dir, browser, image_path, prompt, 
       bridgeDebug('chatgpt image response empty; starting a new chat and retrying image request')
       page = await startNewChat(page)
     }
-    const result = await sendImageAndReadAnswer(page, { image_path, prompt, web_search })
+    const result = await sendImageAndReadAnswer({ page, image_path, prompt, web_search })
     page = result.page
     if (result.answer) {
       return { text: result.answer, model: 'chatgpt-web-session', image: true, web_search }
