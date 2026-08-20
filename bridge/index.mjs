@@ -129,7 +129,7 @@ async function analyze(command) {
     }).every((image) => image.complete && image.naturalWidth > 0), undefined, {
       timeout: envMs("SCREEN_AGENT_IMAGE_WAIT_MS", 4000),
     }).catch(() => {});
-    const settleMs = envMs("SCREEN_AGENT_CAPTURE_SETTLE_MS", 100);
+    const settleMs = envMs("SCREEN_AGENT_CAPTURE_SETTLE_MS", 200);
     if (settleMs) await page.waitForTimeout(settleMs);
     const id = String(command.run_id || Date.now());
     const screenshot = path.join(captureDir, `${id}.png`);
