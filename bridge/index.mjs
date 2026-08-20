@@ -5,6 +5,7 @@ import path from "node:path";
 import process from "node:process";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
+import { uploadImageWithFallback } from "./image-upload.mjs";
 
 const { chromium } = await import("playwright");
 const runtime = process.env.SCREEN_AGENT_RUNTIME || path.resolve(".runtime");
@@ -60,29 +61,7 @@ function captureLaunchOptions() {
 
 async function uploadScreenshot(screenshot, required = false) {
   if (!required && !envBool("SCREEN_AGENT_IMGLINK_UPLOAD", false)) return { status: "disabled" };
-  const apiKey = process.env.SCREEN_AGENT_IMGLINK_API_KEY || process.env.IMGLINK_API_KEY;
-  if (!apiKey) throw new Error("SCREEN_AGENT_IMGLINK_API_KEY required when ImgLink upload is enabled");
-  const form = new FormData();
-  form.append("file", new Blob([await fs.readFile(screenshot)], { type: "image/png" }), path.basename(screenshot));
-  form.append("visibility", "public");
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30000);
-  let response;
-  try {
-    response = await fetch(process.env.SCREEN_AGENT_IMGLINK_URL || "https://imglink.cc/api/upload", {
-      method: "POST",
-      headers: { authorization: `Bearer ${apiKey}` },
-      body: form,
-      signal: controller.signal,
-    });
-  } finally {
-    clearTimeout(timeout);
-  }
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(`ImgLink upload returned ${response.status}`);
-  const image = payload.images?.[0];
-  if (!image?.url) throw new Error("ImgLink upload returned no image URL");
-  return { status: "uploaded", url: image.url, viewer: image.viewer || null, size: image.size || null };
+  return uploadImageWithFallback(screenshot);
 }
 
 function buildPrompt(prompt, pageState, imageUpload, webSearch = false) {

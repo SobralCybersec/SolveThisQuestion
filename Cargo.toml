@@ -5,21 +5,21 @@ edition = "2021"
 build = "build.rs"
 
 [dependencies]
-anyhow = "1"
-axum = "0.8"
-futures-util = "0.3"
-glib = "0.18"
-notify-rust = "4"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-tauri = { version = "2", features = ["tray-icon", "image-png"] }
+anyhow = "1.0.104"
+axum = "0.8.9"
+futures-util = "0.3.34"
+glib = "0.22.8"
+notify-rust = "4.18.0"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tauri = { version = "2.11.5", features = ["tray-icon", "image-png"] }
 tauri-plugin-global-shortcut = "2.3.2"
-tokio = { version = "1", features = ["full"] }
-tokio-stream = { version = "0.1", features = ["sync"] }
-tower-http = { version = "0.6", features = ["cors", "fs"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-uuid = { version = "1", features = ["v4", "serde"] }
+tokio = { version = "1.53.1", features = ["full"] }
+tokio-stream = { version = "0.1.19", features = ["sync"] }
+tower-http = { version = "0.7.0", features = ["cors", "fs"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+uuid = { version = "1.24.1", features = ["v4", "serde"] }
 xcap = "0.9.8"
 
 # Direct wlr-screencopy so Wayland captures skip xcap's D-Bus screenshot
@@ -28,11 +28,20 @@ xcap = "0.9.8"
 [target.'cfg(target_os = "linux")'.dependencies]
 libwayshot-xcap = "0.3.3"
 # libwayshot-xcap's bundled image build has no PNG encoder; encode with our own.
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25.10", default-features = false, features = ["png"] }
 
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = { version = "2.6.3", features = [] }
 
 [profile.release]
 lto = "thin"
 codegen-units = 1
+strip = "symbols"
+
+[profile.dev]
+debug = "line-tables-only"
+incremental = true
+codegen-units = 256
+
+[profile.dev.package."*"]
+debug = false

@@ -11,6 +11,10 @@ type Config = {
   hotkey: string;
   imglink_upload: boolean;
   imglink_api_key_configured: boolean;
+  image_upload_providers: string;
+  imgpile_api_token_configured: boolean;
+  postimages_api_token_configured: boolean;
+  imgbb_api_key_configured: boolean;
   api_key_configured: boolean;
   code_delivery: "notify" | "overlay" | "type";
   mode?: "embedded" | "external";
@@ -30,6 +34,10 @@ const fallback: Config = {
   hotkey: "CommandOrControl+Shift+S",
   imglink_upload: false,
   imglink_api_key_configured: false,
+  image_upload_providers: "catbox,imgpile,postimages,imgbb,imglink",
+  imgpile_api_token_configured: false,
+  postimages_api_token_configured: false,
+  imgbb_api_key_configured: false,
   api_key_configured: false,
   code_delivery: "notify",
   mode: "embedded",
@@ -41,6 +49,12 @@ type SaveContext = {
   clearKey: boolean;
   imglinkKey: string;
   clearImgLinkKey: boolean;
+  imgpileToken: string;
+  clearImgPileToken: boolean;
+  postimagesToken: string;
+  clearPostimagesToken: boolean;
+  imgbbKey: string;
+  clearImgBbKey: boolean;
   setBusy: (value: boolean) => void;
   setMessage: (value: string) => void;
   setError: (value: string) => void;
@@ -49,10 +63,16 @@ type SaveContext = {
   setClearKey: (value: boolean) => void;
   setImgLinkKey: (value: string) => void;
   setClearImgLinkKey: (value: boolean) => void;
+  setImgPileToken: (value: string) => void;
+  setClearImgPileToken: (value: boolean) => void;
+  setPostimagesToken: (value: string) => void;
+  setClearPostimagesToken: (value: boolean) => void;
+  setImgBbKey: (value: string) => void;
+  setClearImgBbKey: (value: boolean) => void;
   setHealth: (value: Health | ((current: Health | null) => Health | null)) => void;
 };
 
-function buildConfigPayload(config: Config, secrets: { apiKey: string; clearKey: boolean; imglinkKey: string; clearImgLinkKey: boolean }) {
+function buildConfigPayload(config: Config, secrets: { apiKey: string; clearKey: boolean; imglinkKey: string; clearImgLinkKey: boolean; imgpileToken: string; clearImgPileToken: boolean; postimagesToken: string; clearPostimagesToken: boolean; imgbbKey: string; clearImgBbKey: boolean }) {
   return {
     url: config.url,
     model: config.model,
@@ -61,15 +81,22 @@ function buildConfigPayload(config: Config, secrets: { apiKey: string; clearKey:
     session_id: config.session_id,
     hotkey: config.hotkey,
     imglink_upload: config.imglink_upload,
+    image_upload_providers: config.image_upload_providers,
     code_delivery: config.code_delivery,
     ...(secrets.imglinkKey ? { imglink_api_key: secrets.imglinkKey } : {}),
     ...(secrets.clearImgLinkKey ? { clear_imglink_api_key: true } : {}),
+    ...(secrets.imgpileToken ? { imgpile_api_token: secrets.imgpileToken } : {}),
+    ...(secrets.clearImgPileToken ? { clear_imgpile_api_token: true } : {}),
+    ...(secrets.postimagesToken ? { postimages_api_token: secrets.postimagesToken } : {}),
+    ...(secrets.clearPostimagesToken ? { clear_postimages_api_token: true } : {}),
+    ...(secrets.imgbbKey ? { imgbb_api_key: secrets.imgbbKey } : {}),
+    ...(secrets.clearImgBbKey ? { clear_imgbb_api_key: true } : {}),
     ...(secrets.apiKey ? { api_key: secrets.apiKey } : {}),
     ...(secrets.clearKey ? { clear_api_key: true } : {}),
   };
 }
 
-async function saveProxyConfig(config: Config, secrets: { apiKey: string; clearKey: boolean; imglinkKey: string; clearImgLinkKey: boolean }) {
+async function saveProxyConfig(config: Config, secrets: { apiKey: string; clearKey: boolean; imglinkKey: string; clearImgLinkKey: boolean; imgpileToken: string; clearImgPileToken: boolean; postimagesToken: string; clearPostimagesToken: boolean; imgbbKey: string; clearImgBbKey: boolean }) {
   const response = await fetch(`${API_BASE}/api/config`, {
     method: "PUT",
     headers: { "content-type": "application/json" },
@@ -88,6 +115,9 @@ async function submitConfig(event: FormEvent, context: SaveContext) {
     context.setConfig((current) => ({ ...current, ...payload }));
     context.setApiKey(""); context.setClearKey(false); context.setMessage("Saved to app config.");
     context.setImgLinkKey(""); context.setClearImgLinkKey(false);
+    context.setImgPileToken(""); context.setClearImgPileToken(false);
+    context.setPostimagesToken(""); context.setClearPostimagesToken(false);
+    context.setImgBbKey(""); context.setClearImgBbKey(false);
     context.setHealth((current) => current ? { ...current, proxy_configured: Boolean(payload.url), proxy_mode: payload.mode } : current);
   } catch (reason) {
     context.setError(reason instanceof Error ? reason.message : "Could not save proxy config");
@@ -102,6 +132,12 @@ export function ConfigPanel({ open, onClose }: Props) {
   const [clearKey, setClearKey] = useState(false);
   const [imglinkKey, setImgLinkKey] = useState("");
   const [clearImgLinkKey, setClearImgLinkKey] = useState(false);
+  const [imgpileToken, setImgPileToken] = useState("");
+  const [clearImgPileToken, setClearImgPileToken] = useState(false);
+  const [postimagesToken, setPostimagesToken] = useState("");
+  const [clearPostimagesToken, setClearPostimagesToken] = useState(false);
+  const [imgbbKey, setImgBbKey] = useState("");
+  const [clearImgBbKey, setClearImgBbKey] = useState(false);
   const [health, setHealth] = useState<Health | null>(null);
   const [loginReady, setLoginReady] = useState(false);
   const [loginInProgress, setLoginInProgress] = useState(false);
@@ -152,8 +188,10 @@ export function ConfigPanel({ open, onClose }: Props) {
 
   const save = (event: FormEvent) => submitConfig(event, {
     config, apiKey, clearKey, imglinkKey, clearImgLinkKey,
+    imgpileToken, clearImgPileToken, postimagesToken, clearPostimagesToken, imgbbKey, clearImgBbKey,
     setBusy, setMessage, setError, setConfig, setApiKey, setClearKey,
-    setImgLinkKey, setClearImgLinkKey, setHealth,
+    setImgLinkKey, setClearImgLinkKey, setImgPileToken, setClearImgPileToken,
+    setPostimagesToken, setClearPostimagesToken, setImgBbKey, setClearImgBbKey, setHealth,
   });
 
   async function login() {
@@ -219,9 +257,16 @@ export function ConfigPanel({ open, onClose }: Props) {
         <div className="switch-row"><span>Think mode — deeper reasoning on desktop captures (slower)</span><Switch checked={config.chatgpt_think} onCheckedChange={(value) => update("chatgpt_think", value)} /></div>
         <Label>Coding answer delivery<Select value={config.code_delivery} onValueChange={(value) => update("code_delivery", value as Config["code_delivery"])} options={[{ value: "notify", label: "notification" }, { value: "type", label: "auto-type into editor" }, { value: "overlay", label: "overlay window" }]} /></Label>
         <Label>Desktop screenshot keybind<Input value={config.hotkey} onChange={(event) => update("hotkey", event.target.value)} placeholder="CommandOrControl+Shift+S" /></Label>
-        <div className="switch-row"><span>Upload screenshots to ImgLink</span><Switch checked={config.imglink_upload} onCheckedChange={(value) => update("imglink_upload", value)} /></div>
-        <Label>ImgLink API key<Input type="password" value={imglinkKey} onChange={(event) => { setImgLinkKey(event.target.value); setClearImgLinkKey(false); }} placeholder={config.imglink_api_key_configured ? "Saved key · enter to replace" : "Required when upload is enabled"} autoComplete="off" /></Label>
+        <div className="switch-row"><span>Upload screenshots to image hosts</span><Switch checked={config.imglink_upload} onCheckedChange={(value) => update("imglink_upload", value)} /></div>
+        <Label>Upload fallback order<Input value={config.image_upload_providers} onChange={(event) => update("image_upload_providers", event.target.value)} placeholder="catbox,imgpile,postimages,imgbb,imglink" /></Label>
+        <Label>ImgLink API key<Input type="password" value={imglinkKey} onChange={(event) => { setImgLinkKey(event.target.value); setClearImgLinkKey(false); }} placeholder={config.imglink_api_key_configured ? "Saved key · enter to replace" : "Optional"} autoComplete="off" /></Label>
         {config.imglink_api_key_configured && <button className="link-button" type="button" onClick={() => { setClearImgLinkKey(true); setImgLinkKey(""); }}>Clear ImgLink key</button>}
+        <Label>ImgPile API key<Input type="password" value={imgpileToken} onChange={(event) => { setImgPileToken(event.target.value); setClearImgPileToken(false); }} placeholder={config.imgpile_api_token_configured ? "Saved key · enter to replace" : "Optional"} autoComplete="off" /></Label>
+        {config.imgpile_api_token_configured && <button className="link-button" type="button" onClick={() => { setClearImgPileToken(true); setImgPileToken(""); }}>Clear ImgPile key</button>}
+        <Label>Postimages API key<Input type="password" value={postimagesToken} onChange={(event) => { setPostimagesToken(event.target.value); setClearPostimagesToken(false); }} placeholder={config.postimages_api_token_configured ? "Saved key · enter to replace" : "Optional"} autoComplete="off" /></Label>
+        {config.postimages_api_token_configured && <button className="link-button" type="button" onClick={() => { setClearPostimagesToken(true); setPostimagesToken(""); }}>Clear Postimages key</button>}
+        <Label>ImgBB API key<Input type="password" value={imgbbKey} onChange={(event) => { setImgBbKey(event.target.value); setClearImgBbKey(false); }} placeholder={config.imgbb_api_key_configured ? "Saved key · enter to replace" : "Optional"} autoComplete="off" /></Label>
+        {config.imgbb_api_key_configured && <button className="link-button" type="button" onClick={() => { setClearImgBbKey(true); setImgBbKey(""); }}>Clear ImgBB key</button>}
         <Button type="submit" disabled={busy}>{busy ? "Saving…" : "Save proxy config"}<b>↗</b></Button>
       </form>
       {!config.url && <Button type="button" disabled={busy || loginInProgress} onClick={login}>{loginInProgress ? "Waiting for ChatGPT login…" : "Open embedded ChatGPT login"} <b>↗</b></Button>}

@@ -1,19 +1,14 @@
-mod bridge;
-mod capture;
-mod config;
-mod platform;
-mod server;
-mod state;
-
-#[cfg(test)]
-mod tests;
+mod backend;
 
 use std::path::PathBuf;
 use tauri::{Manager, WindowEvent};
 use tauri_plugin_global_shortcut::ShortcutState;
 
-use crate::platform::{configure_linux_display, create_tray, suppress_ayatana_deprecation_warning};
-use crate::server::run_server;
+use crate::backend::server::run_server;
+use crate::backend::{
+    capture,
+    platform::{configure_linux_display, create_tray, suppress_ayatana_deprecation_warning},
+};
 
 fn init_logging() {
     configure_linux_display();

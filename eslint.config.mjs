@@ -15,7 +15,7 @@ export default tseslint.config(
     },
   },
   {
-    files: ["bridge/rustproxyhub/**/*.{js,mjs}"],
+    files: ["bridge/**/*.{js,mjs}"],
     languageOptions: {
       globals: { ...globals.browser, ...globals.node, ...globals.es2022 },
     },

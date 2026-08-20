@@ -1,0 +1,16 @@
+.git
+.github
+.runtime
+target
+dist
+reports
+node_modules
+bridge/node_modules
+frontend/node_modules
+frontend/dist
+chatgpt_profile
+captures
+*.log
+.env
+.env.*
+!.env.example

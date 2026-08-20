@@ -1,0 +1,12 @@
+# Stable build defaults. Keep nightly-only flags opt-in per command.
+
+[build]
+# Cargo's default is all logical CPUs; keep it explicit and portable.
+jobs = "default"
+incremental = true
+
+[target.'cfg(target_os = "linux")']
+linker = "clang"
+# Local Linux builds use this machine's CPU features and the fast LLD linker.
+# Release binaries are tuned for this host, not generic x86_64 machines.
+rustflags = ["-C", "target-cpu=native", "-C", "link-arg=-fuse-ld=lld"]

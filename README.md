@@ -12,6 +12,17 @@ pnpm desktop:dev
 
 `pnpm desktop:dev` starts Vite on `http://localhost:5173` and Tauri starts the API on `http://127.0.0.1:8787`. Blank Hub URL uses the embedded RustProxyHub bridge. Open `CONFIG`, click `Open embedded ChatGPT login`, finish sign-in, then run the agent. The persistent profile and storage state live under the app runtime directory. An external `RUST_PROXY_HUB_URL` plus `RUST_PROXY_HUB_API_KEY` remains supported.
 
+## Docker
+
+Docker build uses Playwright's pinned Ubuntu Noble image, not Alpine: Playwright's Linux browser builds require glibc. Build and start the headless container with:
+
+```bash
+docker compose up --build
+curl http://127.0.0.1:8787/api/health
+```
+
+The container binds the API to `0.0.0.0`, disables desktop hotkey registration, keeps runtime state in the `screen-agent-runtime` volume, and provides an Xvfb display for Tauri/WebKit. Set `RUST_PROXY_HUB_URL` and `RUST_PROXY_HUB_API_KEY` for a pre-authenticated external bridge, or provide a pre-authenticated runtime volume for embedded ChatGPT. Container desktop capture sees the container's virtual display; native host-screen capture remains a desktop-mode feature.
+
 ## Shape
 
 - Rust/Axum: `POST /api/run`, `GET /api/events`, `GET /api/health`
@@ -27,7 +38,7 @@ The embedded bridge owns the authenticated, persistent ChatGPT Playwright profil
 
 Headless defaults match both reference bridges: target capture, normal ChatGPT, and image analysis use headless Chromium. Login stays visible. Set `SCREEN_AGENT_BROWSER_HEADLESS=false` or `SCREEN_AGENT_CHATGPT_HEADLESS=false` to inspect a browser window. `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` overrides browser discovery; otherwise the bridge prefers installed Chromium-family binaries before Playwright's bundled browser.
 
-Each run returns viewport dimensions, visible page elements, image inventory, screenshot byte size, and a served preview at `/captures/<run_id>.png`. Optional ImgLink sharing is explicit: set `SCREEN_AGENT_IMGLINK_UPLOAD=true` and `SCREEN_AGENT_IMGLINK_API_KEY`. The bridge uploads server-side with `POST https://imglink.cc/api/upload`; default remains local-only. ImgLink API docs specify `file` multipart field and direct `images[].url` response.
+Each run returns viewport dimensions, visible page elements, image inventory, screenshot byte size, and a served preview at `/captures/<run_id>.png`. Optional image-host sharing is explicit: set `SCREEN_AGENT_IMGLINK_UPLOAD=true`. Providers run in `SCREEN_AGENT_IMAGE_UPLOAD_PROVIDERS` order; HTTP 429 and other provider errors continue to the next provider. Supported adapters are ImgLink, Catbox, ImgPile, Postimages, and ImgBB. Catbox needs no token; ImgPile uses current `POST https://imgpile.com/uploads` with raw bytes and `data.urls.original`; Postimages uses the key API at `https://api.postimage.org/1/upload`; ImgPile, Postimages, and ImgBB use their matching token/key environment variables. The CONFIG panel stores the order and secrets without returning secret values from GET `/api/config`.
 
 Desktop capture: configure `CommandOrControl+Shift+S` in CONFIG. On Hyprland/Wayland, the app registers a compositor Lua bind through `hyprctl eval hl.bind(...)`; the bind calls local `POST /api/capture`, avoiding Tauri global-shortcut's Wayland callback gap. Other platforms use Tauri global-shortcut. Native XCap captures the primary monitor, sends it through the current AI bridge, then emits SSE and desktop notification. Linux falls back to `grim` when XCap cannot enumerate the compositor. This captures pixels outside browser page scripts; it is user-triggered and does not hide capture activity from the app user. Set `SCREEN_AGENT_HOTKEY=` to disable startup registration. `SCREEN_AGENT_SCREEN_PROMPT` changes the default desktop prompt. CONFIG can enable ImgLink and store its key for the running app.
 

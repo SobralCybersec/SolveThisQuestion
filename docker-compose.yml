@@ -1,0 +1,28 @@
+services:
+  screen-agent:
+    build:
+      context: .
+      args:
+        PLAYWRIGHT_VERSION: "1.62.1"
+    image: screen-agent:local
+    init: true
+    ports:
+      - "8787:8787"
+    shm_size: "1gb"
+    environment:
+      SCREEN_AGENT_BIND_ADDR: "0.0.0.0"
+      SCREEN_AGENT_HOTKEY: ""
+      SCREEN_AGENT_RUNTIME: /data/runtime
+      SCREEN_AGENT_CHATGPT_HEADLESS: "true"
+      SCREEN_AGENT_IMAGE_HEADLESS: "true"
+      SCREEN_AGENT_BROWSER_HEADLESS: "true"
+      RUST_PROXY_HUB_URL: "${RUST_PROXY_HUB_URL:-}"
+      RUST_PROXY_HUB_API_KEY: "${RUST_PROXY_HUB_API_KEY:-}"
+      RUST_PROXY_HUB_MODEL: "${RUST_PROXY_HUB_MODEL:-chatgpt:chatgpt-web-session}"
+      RUST_PROXY_HUB_CHATGPT_MODE: "${RUST_PROXY_HUB_CHATGPT_MODE:-web}"
+      RUST_PROXY_HUB_SESSION_ID: "${RUST_PROXY_HUB_SESSION_ID:-screen-agent}"
+    volumes:
+      - screen-agent-runtime:/data/runtime
+
+volumes:
+  screen-agent-runtime:

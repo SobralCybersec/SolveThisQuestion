@@ -1,0 +1,83 @@
+# ============================================================
+# Security — supply-chain + secret hygiene, on push/PR + weekly.
+#   gitleaks      — secret / credential scanning (full history)
+#   cargo-audit   — RustSec advisories against Cargo.lock
+#   pnpm-audit    — npm advisories (non-blocking: dev-tree noise)
+# The weekly cron re-scans so newly published advisories surface
+# even with no code change.
+# ============================================================
+name: Security
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  schedule:
+    - cron: "0 5 * * 1" # Monday 05:00 UTC
+
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    name: Secret scan (Gitleaks)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0 # gitleaks needs the full git log
+          persist-credentials: false
+      - name: Install Gitleaks v8.27.2
+        run: |
+          curl -sSL \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.27.2/gitleaks_8.27.2_linux_x64.tar.gz \
+            | tar -xz gitleaks
+          sudo mv gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+      - name: Detect secrets
+        run: gitleaks detect --source . --redact --verbose
+
+  cargo-audit:
+    name: cargo audit (RustSec)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: . -> target
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Audit Cargo.lock
+        run: cargo audit -f Cargo.lock
+
+  pnpm-audit:
+    name: pnpm audit (npm advisories)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # Non-blocking: transitive dev-dependency advisories are noisy and rarely
+    # reachable at runtime. Surfaced as a warning; cargo-audit is the hard gate.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 10.15.0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm audit --prod

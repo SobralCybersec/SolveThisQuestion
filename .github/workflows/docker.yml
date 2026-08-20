@@ -1,0 +1,154 @@
+# ============================================================
+# Docker — build the runnable app image (Dockerfile), cache it via the
+# GitHub Actions cache, and Trivy-scan it.
+# On main it's pushed to GHCR so anyone can `docker pull` the exact
+# build/verify box. On PRs it's built + loaded but never pushed.
+#
+# The desktop app also ships as native installers from release.yml.
+# ============================================================
+name: Docker Verify Image
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - "Dockerfile"
+      - "docker-compose.yml"
+      - ".dockerignore"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "build.rs"
+      - "tauri.conf.json"
+      - "src/**"
+      - "frontend/**"
+      - "bridge/**"
+      - "icons/**"
+      - ".github/workflows/docker.yml"
+
+env:
+  REGISTRY: ghcr.io
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build · scan · (push on main)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Lowercase image name
+        id: repo
+        run: echo "image=${REGISTRY}/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')/verify" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        with:
+          images: ${{ steps.repo.outputs.image }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha
+            type=raw,value=latest,enable={{is_default_branch}}
+          labels: |
+            org.opencontainers.image.title=Screen Agent
+            org.opencontainers.image.description=Headless Screen Agent runtime
+            org.opencontainers.image.licenses=MIT
+
+      # PR: build + load locally, do not push.
+      - name: Build (PR — no push)
+        if: github.event_name == 'pull_request'
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # main: build + push to GHCR with provenance + SBOM.
+      - name: Build and push (main)
+        id: push
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: true
+          sbom: true
+
+      # Trivy here scans the OS layer of the image — nothing else. Rust and npm
+      # dependency CVEs are owned by cargo-audit + pnpm-audit (security.yml),
+      # which resolve the ACTUAL shipped tree from Cargo.lock and
+      # pnpm-lock.yaml. Left unscoped, Trivy instead scraped every crate-source
+      # Cargo.lock sitting in the cargo registry cache — reqwest 0.13.3 (we ship
+      # 0.12.28), cargo-audit's own rustsec-0.33.0 lock, aws-lc/openssl we don't
+      # even depend on — and filed dozens of phantom alerts for versions that
+      # never reach the product. Scope it to what an image scan is actually for.
+      - name: Trivy scan (OS layer of the pushed image)
+        if: github.event_name != 'pull_request'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        env:
+          # Scan the concrete amd64 manifest, NOT the provenance/SBOM OCI index
+          # that :latest resolves to. Scanning the attestation manifest is what
+          # produced library findings with empty artifactLocation.uri — a SARIF
+          # that uploads "successfully" but GitHub's async ingest then rejects
+          # ("failed to process"). Refs: trivy #8141, discussion #10196.
+          TRIVY_PLATFORM: linux/amd64
+        with:
+          image-ref: ${{ steps.repo.outputs.image }}:latest
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+          # OS packages only. Must be the input, not TRIVY_PKG_TYPES env — the
+          # action always passes --vuln-type (default os,library) on the CLI,
+          # and the CLI flag beats the env var.
+          vuln-type: os
+          ignore-unfixed: true # keep the Security tab actionable
+          limit-severities-for-sarif: true # else SARIF ignores `severity` and dumps every level
+          # Don't walk the toolchain caches — pointless for an OS scan and slow.
+          skip-dirs: /usr/local/cargo,/usr/local/rustup,/root/.local/share/pnpm,/app/node_modules
+
+      # No `category:` — keep the default so this clean analysis supersedes the
+      # earlier one and auto-closes the stale library alerts it had filed.
+      - name: Upload Trivy SARIF
+        if: github.event_name != 'pull_request'
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4
+        with:
+          sarif_file: trivy-results.sarif

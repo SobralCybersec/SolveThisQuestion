@@ -4,16 +4,17 @@
   "version": "0.1.0",
   "packageManager": "pnpm@10.15.0",
   "scripts": {
-    "dev": "pnpm --filter @screen-agent/frontend dev",
+    "dev": "pnpm --dir frontend run dev",
     "dev:api": "cargo run",
     "app": "cargo tauri dev",
     "desktop:dev": "cargo tauri dev",
     "desktop": "pnpm build && cargo run",
     "desktop:build": "pnpm build && cargo build --release",
-    "build": "pnpm --filter @screen-agent/frontend build",
-    "check": "cargo check && pnpm --filter @screen-agent/frontend build",
-    "test": "cargo test && npm run test:bridge",
+    "build": "pnpm --dir frontend run build",
+    "check": "cargo check && pnpm --dir frontend run build",
+    "test": "cargo test && npm run test:bridge && npm run test:frontend",
     "test:bridge": "node --test --test-concurrency=1 bridge/test/*.test.mjs",
+    "test:frontend": "pnpm --dir frontend run test",
     "test:report": "node -e \"require('node:fs').mkdirSync('reports/quality',{recursive:true})\" && node --test --test-concurrency=1 --experimental-test-coverage --test-coverage-include=bridge/rustproxyhub/chatgpt-web-flow.mjs --test-coverage-include=bridge/rustproxyhub/prompt-compaction.mjs --test-coverage-include=bridge/rustproxyhub/chatgpt-web-response.mjs --test-coverage-include=bridge/rustproxyhub/chatgpt-web-session.mjs --test-reporter=junit --test-reporter-destination=reports/quality/bridge-tests.xml --test-reporter=lcov --test-reporter-destination=reports/quality/lcov.info bridge/test/*.test.mjs",
     "quality:tests": "node --test --test-concurrency=1 scripts/tests/*.node-test.mjs",
     "quality:clippy": "cargo clippy --all-targets --all-features -- -D warnings",
@@ -28,13 +29,14 @@
     "bridge:smoke": "pnpm --dir bridge smoke"
   },
   "engines": {
-    "node": ">=20"
+    "node": "^20.19.0 || >=22.12.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "eslint": "^10.8.1",
     "globals": "^17.11.0",
     "jscpd": "^5.0.16",
+    "typescript": "~5.7.2",
     "typescript-eslint": "^8.67.0"
   }
 }

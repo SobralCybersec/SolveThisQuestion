@@ -37,7 +37,7 @@ function useAgentEvents({ setCapture, setAnswer, setState, setError }: {
   }, [setAnswer, setCapture, setError, setState]);
 }
 
-async function queueRun({ url, prompt, webSearch }: { url: string; prompt: string; webSearch: boolean }) {
+export async function queueRun({ url, prompt, webSearch }: { url: string; prompt: string; webSearch: boolean }) {
   const response = await fetch(`${API_BASE}/api/run`, {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ url, prompt, web_search: webSearch }),
@@ -46,11 +46,11 @@ async function queueRun({ url, prompt, webSearch }: { url: string; prompt: strin
   return { ok: response.ok, error: payload.error || "Could not queue run" };
 }
 
-function statusLabelFor(state: RunState) {
+export function statusLabelFor(state: RunState) {
   return { ready: "Ready", capturing: "Reading screen", answer: "Answer ready", error: "Needs attention" }[state];
 }
 
-async function submitRun(event: FormEvent, context: {
+export async function submitRun(event: FormEvent, context: {
   url: string;
   prompt: string;
   webSearch: boolean;

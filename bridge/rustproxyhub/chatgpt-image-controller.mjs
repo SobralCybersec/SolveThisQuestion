@@ -47,6 +47,31 @@ async function prepareImagePage(page, imagePath, webSearch) {
   return page
 }
 
+async function readAssistantMessageText(message) {
+  const innerText = await message.innerText().catch(() => '')
+  if (innerText.trim()) return innerText.trim()
+  return String(await message.textContent().catch(() => '')).trim()
+}
+
+async function readAssistantMessageTexts(messages) {
+  const count = await messages.count()
+  const texts = []
+  for (let index = 0; index < count; index += 1) {
+    texts.push(await readAssistantMessageText(messages.nth(index)))
+  }
+  return texts
+}
+
+export function selectNewAssistantText(texts, beforeCount, beforeTexts = []) {
+  for (let index = texts.length - 1; index >= 0; index -= 1) {
+    const text = String(texts[index] || '').trim()
+    if (!text) continue
+    if (index >= beforeCount) return text
+    if (text !== String(beforeTexts[index] || '').trim()) return text
+  }
+  return ''
+}
+
 function imagePrompt(prompt, webSearch) {
   const normalized = prompt.replace(/@WebSearch\b/gi, '@Web search')
   return webSearch && !/@Web search\s*$/i.test(normalized.trim())
@@ -57,8 +82,9 @@ function imagePrompt(prompt, webSearch) {
 async function sendImageAndReadAnswer(options) {
   const { page: initialPage, image_path, prompt, web_search } = options
   let page = await prepareImagePage(initialPage, image_path, web_search)
-  const assistantMessages = page.locator('[data-message-author-role="assistant"]')
-  const beforeCount = await assistantMessages.count()
+  const assistantMessages = page.locator('[data-message-author-role="assistant"]:visible')
+  const beforeTexts = await readAssistantMessageTexts(assistantMessages)
+  const beforeCount = beforeTexts.length
   const composer = page.locator(CHATGPT_INPUT_SELECTOR).first()
   await composer.waitFor({ state: 'visible', timeout: 30000 })
   await composer.fill(imagePrompt(prompt, web_search))
@@ -75,9 +101,10 @@ async function sendImageAndReadAnswer(options) {
   const stopButton = page.locator('button[data-testid="stop-button"], button[aria-label="Stop streaming"]')
   const waited = await waitForAssistantAnswer({
     read: async () => {
-      if (await assistantMessages.count() <= beforeCount) return { text: '', streaming: false }
-      const text = await assistantMessages.last().innerText().catch(() => '')
+      const texts = await readAssistantMessageTexts(assistantMessages)
+      const text = selectNewAssistantText(texts, beforeCount, beforeTexts)
       const streaming = await stopButton.count() && await stopButton.first().isVisible().catch(() => false)
+      bridgeDebug(`chatgpt image answer scan messages=${texts.length} baseline=${beforeCount} chars=${text.length} streaming=${Boolean(streaming)}`)
       return { text, streaming }
     },
     answerTimeoutMs: answerTimeout,
