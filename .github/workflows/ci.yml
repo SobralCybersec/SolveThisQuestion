@@ -23,7 +23,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install Tauri Linux system dependencies
         run: |
@@ -93,7 +93,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Checkout
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30af803 # v6.1.0
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Build image
         run: docker compose build --pull
@@ -104,6 +104,7 @@ jobs:
           trap 'docker compose logs; docker compose down --volumes' EXIT
           for attempt in $(seq 1 30); do
             if curl --fail --silent http://127.0.0.1:8787/api/health; then
+              printf 'healthcheck passed on attempt %s\n' "$attempt"
               exit 0
             fi
             sleep 2
