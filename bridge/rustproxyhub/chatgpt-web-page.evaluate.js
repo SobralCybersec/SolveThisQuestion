@@ -62,36 +62,30 @@ function assistantModel(payload) {
   return ''
 }
 
-function assistantReasoning(payload, output = [], acceptsText = false, depth = 0) {
-  if (depth > 12 || payload == null) return output.join('\n').trim()
-  if (typeof payload === 'string') {
-    if (acceptsText && payload.trim()) output.push(payload)
-    return output.join('\n').trim()
-  }
-  if (Array.isArray(payload)) {
-    for (const item of payload) assistantReasoning(item, output, acceptsText, depth + 1)
-    return output.join('\n').trim()
-  }
-  if (typeof payload === 'object') {
-    for (const [key, value] of Object.entries(payload)) {
-      assistantReasoning(value, output, acceptsText || ['reasoning', 'reasoning_content', 'summary', 'thoughts'].includes(key), depth + 1)
-    }
-  }
-  return output.join('\n').trim()
+const REASONING_KEYS = new Set(['reasoning', 'reasoning_content', 'summary', 'thoughts'])
+
+function collectReasoningText(payload, acceptsText = false, depth = 0) {
+  if (depth > 12 || payload == null) return []
+  if (typeof payload === 'string') return acceptsText && payload.trim() ? [payload] : []
+  if (Array.isArray(payload)) return payload.flatMap(item => collectReasoningText(item, acceptsText, depth + 1))
+  if (typeof payload !== 'object') return []
+  return Object.entries(payload).flatMap(([key, value]) => collectReasoningText(value, acceptsText || REASONING_KEYS.has(key), depth + 1))
+}
+
+function assistantReasoning(payload) {
+  return collectReasoningText(payload).join('\n').trim()
 }
 
 function pushUnique(list, value) {
   if (value && !list.includes(value)) list.push(value)
 }
 
-function recordStreamMetadata(parsed, state) {
-  for (const key of Object.keys(parsed || {})) pushUnique(state.keys, key)
+function recordMessageDetails(parsed, state) {
   const role = parsed?.message?.author?.role
   if (role === 'assistant' && parsed?.message?.id) state.messageId = parsed.message.id
   const contentType = parsed?.message?.content?.content_type
-  const messageShape = parsed?.message && typeof parsed.message === 'object'
-    ? Object.keys(parsed.message).slice(0, 12).join(',')
-    : typeof parsed?.message
+  const message = parsed?.message
+  const messageShape = message && typeof message === 'object' ? Object.keys(message).slice(0, 12).join(',') : typeof message
   pushUnique(state.messageShapes, messageShape)
   pushUnique(state.roles, role)
   pushUnique(state.contentTypes, contentType)
@@ -99,7 +93,24 @@ function recordStreamMetadata(parsed, state) {
   state.model = assistantModel(parsed) || state.model
 }
 
-async function readPageStream({ reader, decoder, state, emitReasoning, emitDelta }) {
+function recordStreamMetadata(parsed, state) {
+  for (const key of Object.keys(parsed || {})) pushUnique(state.keys, key)
+  recordMessageDetails(parsed, state)
+}
+
+async function processStreamLine(line, state, emitReasoning, emitDelta) {
+  const data = line.trim().replace(/^data:/, '').trim()
+  if (!data || data === '[DONE]') return
+  try {
+    const parsed = JSON.parse(data)
+    recordStreamMetadata(parsed, state)
+    await emitReasoning(parsed)
+    await emitDelta(parsed)
+  } catch {}
+}
+
+async function readPageStream(options) {
+  const { reader, decoder, state, emitReasoning, emitDelta } = options
   try {
     while (true) {
       let chunk
@@ -115,16 +126,7 @@ async function readPageStream({ reader, decoder, state, emitReasoning, emitDelta
       state.lineBuffer += decoded
       const lines = state.lineBuffer.split('\n')
       state.lineBuffer = lines.pop() || ''
-      for (const line of lines) {
-        const data = line.trim().replace(/^data:/, '').trim()
-        if (!data || data === '[DONE]') continue
-        try {
-          const parsed = JSON.parse(data)
-          recordStreamMetadata(parsed, state)
-          await emitReasoning(parsed)
-          await emitDelta(parsed)
-        } catch {}
-      }
+      for (const line of lines) await processStreamLine(line, state, emitReasoning, emitDelta)
     }
   } finally {
     await reader.cancel().catch(() => {})

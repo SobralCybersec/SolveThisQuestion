@@ -11,6 +11,38 @@ export async function composerText(composer) {
   return (await composer.inputValue().catch(async () => composer.innerText().catch(() => ''))).trim()
 }
 
+async function submitButtonReady(button) {
+  if (!await button.count()) return false
+  if (!await button.isVisible().catch(() => false)) return false
+  return !await button.isDisabled().catch(() => true)
+}
+
+async function waitForComposerClear(options) {
+  const { composer, readText, sleep, intervalMs, attempts, method, onSubmitted } = options
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (!await readText(composer)) {
+      onSubmitted(method)
+      return method
+    }
+    await sleep(intervalMs)
+  }
+  return null
+}
+
+async function tryButtonSubmit(options) {
+  const { page, composer, selector, readText, sleep, intervalMs, onSubmitted } = options
+  const sendButton = page.locator(selector).last()
+  if (!await submitButtonReady(sendButton)) return null
+  await sendButton.click({ force: true }).catch(() => {})
+  return waitForComposerClear({ composer, readText, sleep, intervalMs, attempts: 20, method: 'button', onSubmitted })
+}
+
+async function tryKeyboardSubmit(options) {
+  const { composer, readText, sleep, intervalMs, onSubmitted } = options
+  await composer.press('Enter').catch(() => {})
+  return waitForComposerClear({ composer, readText, sleep, intervalMs, attempts: 10, method: 'keyboard', onSubmitted })
+}
+
 export async function submitChatGPTPrompt(options = {}) {
   const {
     page,
@@ -26,31 +58,13 @@ export async function submitChatGPTPrompt(options = {}) {
   } = options
   const deadline = now() + deadlineMs
   while (now() < deadline) {
-    const sendButton = page.locator(selector).last()
-    const ready = await sendButton.count()
-      && await sendButton.isVisible().catch(() => false)
-      && !await sendButton.isDisabled().catch(() => true)
-    if (ready) {
-      await sendButton.click({ force: true }).catch(() => {})
-      for (let attempt = 0; attempt < 20; attempt += 1) {
-        if (!await readText(composer)) {
-          onSubmitted('button')
-          return 'button'
-        }
-        await sleep(sendCheckIntervalMs)
-      }
-    }
+    const submitted = await tryButtonSubmit({ page, composer, selector, readText, sleep, intervalMs: sendCheckIntervalMs, onSubmitted })
+    if (submitted) return submitted
     await sleep(buttonPollIntervalMs)
   }
 
-  await composer.press('Enter').catch(() => {})
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    if (!await readText(composer)) {
-      onSubmitted('keyboard')
-      return 'keyboard'
-    }
-    await sleep(sendCheckIntervalMs)
-  }
+  const submitted = await tryKeyboardSubmit({ composer, readText, sleep, intervalMs: sendCheckIntervalMs, onSubmitted })
+  if (submitted) return submitted
   throw new Error('ChatGPT composer did not submit prompt')
 }
 
@@ -83,6 +97,13 @@ export async function waitForChatGPTResponse(options = {}) {
   return { body: lastBody, status: lastStatus }
 }
 
+function answerIsStable(options) {
+  const { text, streaming, lastChange, now, stableMs, codeStableMs } = options
+  if (!text || streaming) return false
+  const stableWindow = text.includes('```') ? codeStableMs : stableMs
+  return now() - lastChange >= stableWindow
+}
+
 export async function waitForAssistantAnswer(options = {}) {
   const {
     read,
@@ -106,12 +127,9 @@ export async function waitForAssistantAnswer(options = {}) {
     if (text !== lastText) {
       lastText = text
       lastChange = now()
-    } else if (text) {
-      const stableWindow = text.includes('```') ? codeStableMs : stableMs
-      if (!state?.streaming && now() - lastChange >= stableWindow) {
-        answer = text
-        break
-      }
+    } else if (answerIsStable({ text, streaming: state?.streaming, lastChange, now, stableMs, codeStableMs })) {
+      answer = text
+      break
     }
     if (!lastText && now() - startedAt >= emptyRetryTimeoutMs) {
       return { answer: '', retry: true }

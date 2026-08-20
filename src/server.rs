@@ -24,6 +24,9 @@ use crate::{
     state::{AgentEvent, AppState, ConfigUpdate, ProxyConfig, RunRequest, RunResponse},
 };
 
+#[path = "server_login.rs"]
+mod login;
+
 pub(crate) async fn run_server(
     app: tauri::AppHandle,
     bridge: std::path::PathBuf,
@@ -55,22 +58,7 @@ pub(crate) async fn run_server(
     app.manage(Arc::clone(&state));
     register_hotkey(&app, &config.hotkey, port)?;
 
-    let cors = CorsLayer::new()
-        .allow_origin(tower_http::cors::Any)
-        .allow_methods([Method::GET, Method::POST, Method::PUT])
-        .allow_headers([header::CONTENT_TYPE]);
-    let app = Router::new()
-        .route("/api/health", get(health))
-        .route("/api/config", get(get_config).put(update_config))
-        .route("/api/proxy/login", post(proxy_login))
-        .route("/api/proxy/close-login", post(proxy_close_login))
-        .route("/api/proxy/status", get(proxy_status))
-        .route("/api/events", get(events))
-        .route("/api/capture", post(capture))
-        .route("/api/run", post(run))
-        .nest_service("/captures", ServeDir::new(runtime.join("captures")))
-        .layer(cors)
-        .with_state(state);
+    let app = build_router(state, runtime);
     let address = SocketAddr::from(([127, 0, 0, 1], port));
     tracing::info!(%address, "screen-agent listening");
     let listener = tokio::net::TcpListener::bind(address).await?;
@@ -110,12 +98,16 @@ fn validate_url(url: &str) -> Result<(), String> {
     }
 }
 
-fn apply_connection_config(config: &mut ProxyConfig, update: &ConfigUpdate) -> Result<(), String> {
+fn apply_proxy_url(config: &mut ProxyConfig, update: &ConfigUpdate) -> Result<(), String> {
     if let Some(url) = &update.url {
         let url = url.trim();
         validate_url(url)?;
         config.url = url.trim_end_matches('/').to_owned();
     }
+    Ok(())
+}
+
+fn apply_proxy_api_key(config: &mut ProxyConfig, update: &ConfigUpdate) {
     if update.clear_api_key.unwrap_or(false) {
         config.api_key = None;
     } else if let Some(api_key) = update
@@ -125,6 +117,9 @@ fn apply_connection_config(config: &mut ProxyConfig, update: &ConfigUpdate) -> R
     {
         config.api_key = Some(api_key.trim().to_owned());
     }
+}
+
+fn apply_chatgpt_config(config: &mut ProxyConfig, update: &ConfigUpdate) -> Result<(), String> {
     if let Some(model) = &update.model {
         config.model = model.trim().to_owned();
     }
@@ -142,6 +137,12 @@ fn apply_connection_config(config: &mut ProxyConfig, update: &ConfigUpdate) -> R
         config.session_id = (!session_id.trim().is_empty()).then(|| session_id.trim().to_owned());
     }
     Ok(())
+}
+
+fn apply_connection_config(config: &mut ProxyConfig, update: &ConfigUpdate) -> Result<(), String> {
+    apply_proxy_url(config, update)?;
+    apply_proxy_api_key(config, update);
+    apply_chatgpt_config(config, update)
 }
 
 fn apply_delivery_config(config: &mut ProxyConfig, update: &ConfigUpdate) {
@@ -202,6 +203,25 @@ async fn apply_hotkey(
     Ok(())
 }
 
+fn build_router(state: Arc<AppState>, runtime: std::path::PathBuf) -> Router {
+    let cors = CorsLayer::new()
+        .allow_origin(tower_http::cors::Any)
+        .allow_methods([Method::GET, Method::POST, Method::PUT])
+        .allow_headers([header::CONTENT_TYPE]);
+    Router::new()
+        .route("/api/health", get(health))
+        .route("/api/config", get(get_config).put(update_config))
+        .route("/api/proxy/login", post(login::proxy_login))
+        .route("/api/proxy/close-login", post(login::proxy_close_login))
+        .route("/api/proxy/status", get(login::proxy_status))
+        .route("/api/events", get(events))
+        .route("/api/capture", post(capture))
+        .route("/api/run", post(run))
+        .nest_service("/captures", ServeDir::new(runtime.join("captures")))
+        .layer(cors)
+        .with_state(state)
+}
+
 async fn update_config(
     State(state): State<Arc<AppState>>,
     Json(update): Json<ConfigUpdate>,
@@ -260,10 +280,12 @@ async fn run(
     });
     tokio::spawn(run_agent(
         state,
-        run_id,
-        request.url,
-        prompt,
-        request.web_search,
+        crate::bridge::BridgeRunRequest {
+            run_id,
+            url: request.url,
+            prompt,
+            web_search: request.web_search,
+        },
     ));
     Ok((
         StatusCode::ACCEPTED,
@@ -274,186 +296,15 @@ async fn run(
     ))
 }
 
-async fn run_agent(
-    state: Arc<AppState>,
-    run_id: Uuid,
-    url: String,
-    prompt: String,
-    web_search: bool,
-) {
-    match run_bridge(&state, run_id, url, prompt, web_search).await {
-        Ok(output) => publish_success(&state, run_id, output).await,
+async fn run_agent(state: Arc<AppState>, request: crate::bridge::BridgeRunRequest) {
+    match run_bridge(&state, &request).await {
+        Ok(output) => publish_success(&state, request.run_id, output).await,
         Err(error) => {
-            tracing::error!(%run_id, %error, "agent run failed");
+            tracing::error!(run_id = %request.run_id, %error, "agent run failed");
             let _ = state.events.send(AgentEvent {
                 event: "run.failed".to_owned(),
-                data: serde_json::json!({ "run_id": run_id, "error": error.to_string() }),
+                data: serde_json::json!({ "run_id": request.run_id, "error": error.to_string() }),
             });
         }
     }
-}
-
-fn reset_login(state: &AppState) {
-    state
-        .login_in_progress
-        .store(false, std::sync::atomic::Ordering::Release);
-}
-
-fn external_login() -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "mode": "external", "logged_in": true, "ready": true }))
-}
-
-fn busy_login() -> Json<serde_json::Value> {
-    Json(serde_json::json!({
-        "mode": "embedded", "logged_in": false, "ready": false, "login_in_progress": true,
-    }))
-}
-
-async fn start_login_bridge(
-    state: &Arc<AppState>,
-) -> Result<crate::bridge::BridgeProcess, (StatusCode, Json<serde_json::Value>)> {
-    let process_lock = crate::bridge::acquire_bridge_process_lock(&state.runtime)
-        .await
-        .map_err(|error| {
-            reset_login(state);
-            (
-                StatusCode::CONFLICT,
-                Json(serde_json::json!({ "error": error.to_string() })),
-            )
-        })?;
-    let config = state.proxy.read().await.clone();
-    let mut child = crate::bridge::bridge_command(state, &config)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::inherit())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|error| {
-            reset_login(state);
-            (
-                StatusCode::BAD_GATEWAY,
-                Json(serde_json::json!({ "error": format!("start login bridge: {error}") })),
-            )
-        })?;
-    let stdin = child.stdin.take().expect("login bridge stdin configured");
-    let stdout = child.stdout.take().expect("login bridge stdout configured");
-    Ok(crate::bridge::BridgeProcess {
-        child,
-        stdin,
-        stdout: tokio::io::BufReader::new(stdout),
-        _process_lock: process_lock,
-    })
-}
-
-async fn stop_failed_login(
-    state: &Arc<AppState>,
-    bridge: &mut crate::bridge::BridgeProcess,
-    error: String,
-) -> (StatusCode, Json<serde_json::Value>) {
-    let _ = bridge.child.kill().await;
-    let _ = bridge.child.wait().await;
-    reset_login(state);
-    (
-        StatusCode::BAD_GATEWAY,
-        Json(serde_json::json!({ "error": format!("start ChatGPT login: {error}") })),
-    )
-}
-
-async fn proxy_login(
-    State(state): State<Arc<AppState>>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    if !state.proxy.read().await.url.is_empty() {
-        return Ok(external_login());
-    }
-    if state
-        .login_in_progress
-        .compare_exchange(
-            false,
-            true,
-            std::sync::atomic::Ordering::AcqRel,
-            std::sync::atomic::Ordering::Acquire,
-        )
-        .is_err()
-    {
-        return Ok(busy_login());
-    }
-    close_agent_bridge(&state).await;
-    let mut login_bridge = start_login_bridge(&state).await?;
-    let login_result = tokio::time::timeout(
-        std::time::Duration::from_secs(60),
-        login_bridge.request(serde_json::json!({ "cmd": "login" })),
-    )
-    .await;
-    let login_error = match login_result {
-        Ok(Ok(_)) => None,
-        Ok(Err(error)) => Some(error.to_string()),
-        Err(_) => Some("ChatGPT login window did not start within 20 seconds".to_owned()),
-    };
-    if let Some(error) = login_error {
-        return Err(stop_failed_login(&state, &mut login_bridge, error).await);
-    }
-    *state.login_bridge.lock().await = Some(login_bridge);
-    tracing::info!("embedded ChatGPT login window opened");
-    Ok(Json(serde_json::json!({
-        "mode": "embedded", "logged_in": false, "ready": false, "login_in_progress": true, "started": true,
-    })))
-}
-
-async fn proxy_status(
-    State(state): State<Arc<AppState>>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let config = state.proxy.read().await.clone();
-    if !config.url.is_empty() {
-        return Ok(Json(
-            serde_json::json!({ "mode": "external", "logged_in": true, "ready": true }),
-        ));
-    }
-    if state
-        .login_in_progress
-        .load(std::sync::atomic::Ordering::Acquire)
-    {
-        let mut login_bridge = state.login_bridge.lock().await;
-        if let Some(bridge) = login_bridge.as_mut() {
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(8),
-                bridge.request(serde_json::json!({ "cmd": "status" })),
-            )
-            .await
-            {
-                Ok(Ok(mut value)) => {
-                    if let Some(object) = value.as_object_mut() {
-                        object.insert(
-                            "login_in_progress".to_owned(),
-                            serde_json::Value::Bool(true),
-                        );
-                    }
-                    return Ok(Json(value));
-                }
-                Ok(Err(error)) => tracing::warn!(%error, "persistent login status failed"),
-                Err(_) => tracing::warn!("persistent login status timed out"),
-            }
-        }
-        return Ok(Json(serde_json::json!({
-            "mode": "embedded", "logged_in": false, "ready": false, "login_in_progress": true,
-        })));
-    }
-    agent_request(&state, serde_json::json!({ "cmd": "status" }), 30)
-        .await
-        .map(Json)
-        .map_err(|error| {
-            (
-                StatusCode::BAD_GATEWAY,
-                Json(serde_json::json!({ "error": error.to_string() })),
-            )
-        })
-}
-
-async fn proxy_close_login(
-    State(state): State<Arc<AppState>>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    tracing::info!("closing embedded ChatGPT login bridge");
-    close_login_bridge(&state)
-        .await
-        .map(|()| Json(serde_json::json!({ "mode": "embedded", "closed": true, "login_in_progress": false })))
-        .map_err(|error| (StatusCode::BAD_GATEWAY, Json(serde_json::json!({ "error": error.to_string() }))))
 }

@@ -5,8 +5,8 @@ import { fileURLToPath } from "node:url";
 
 export const ROOTS = ["."];
 export const DEFAULT_REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-export const HARD_LIMIT = 1_800;
-export const REVIEW_LIMIT = 500;
+export const HARD_LIMIT = 800;
+export const REVIEW_LIMIT = 400;
 
 // Code/config extensions intentionally span mainstream, systems, data, IaC,
 // scripting, mobile, functional, scientific, HDL, and smart-contract ecosystems.

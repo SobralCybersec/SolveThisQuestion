@@ -57,6 +57,13 @@ pub(crate) struct BridgeProcessLock {
     _file: tokio::fs::File,
 }
 
+pub(crate) struct BridgeRunRequest {
+    pub(crate) run_id: Uuid,
+    pub(crate) url: String,
+    pub(crate) prompt: String,
+    pub(crate) web_search: bool,
+}
+
 impl Drop for BridgeProcessLock {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
@@ -116,10 +123,7 @@ pub(crate) async fn acquire_bridge_process_lock(runtime: &Path) -> Result<Bridge
 
 pub(crate) async fn run_bridge(
     state: &AppState,
-    run_id: Uuid,
-    url: String,
-    prompt: String,
-    web_search: bool,
+    request: &BridgeRunRequest,
 ) -> Result<serde_json::Value> {
     if state.proxy.read().await.url.is_empty() {
         let status = agent_request(state, serde_json::json!({ "cmd": "status" }), 30).await?;
@@ -131,10 +135,10 @@ pub(crate) async fn run_bridge(
         state,
         serde_json::json!({
             "cmd": "analyze",
-            "run_id": run_id,
-            "url": url,
-            "prompt": prompt,
-            "web_search": web_search,
+            "run_id": request.run_id,
+            "url": request.url,
+            "prompt": request.prompt,
+            "web_search": request.web_search,
         }),
         250,
     )

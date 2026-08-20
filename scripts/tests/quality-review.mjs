@@ -22,7 +22,7 @@ import {
   runCommand,
   summarizeTrivyReport,
 } from "./quality-metrics.mjs";
-import { writeQualityReport } from "./quality-report.mjs";
+import { parseLizardFindings, writeQualityReport } from "./quality-report.mjs";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_REPO_ROOT = resolve(scriptDir, "../..");
@@ -30,9 +30,9 @@ export const DEFAULT_QUALITY_PATHS = ["src", "bridge/rustproxyhub", "frontend/sr
 
 export const POLICY = {
   file: { review: REVIEW_LIMIT, hard: HARD_LIMIT },
-  duplication: { hardPercent: DEFAULT_THRESHOLD },
+  duplication: { reviewPercent: 3, hardPercent: DEFAULT_THRESHOLD },
   complexity: {
-    review: { ccn: 10, nloc: 50, length: 80, arguments: 4 },
+    review: { ccn: 10, nloc: 50, length: 80, arguments: 4, nesting: 3 },
     hard: { ccn: 15, nloc: 80, length: 120, arguments: 6 },
   },
   coverage: { linePercentMin: 80 },
@@ -65,6 +65,7 @@ export function parseQualityArgs(argv, { repoRoot = DEFAULT_REPO_ROOT } = {}) {
     requireTools: false,
     requireEvidence: false,
     security: false,
+    skipTools: false,
     skipJscpd: false,
     skipLizard: false,
     coverageMin: POLICY.coverage.linePercentMin,
@@ -78,6 +79,7 @@ export function parseQualityArgs(argv, { repoRoot = DEFAULT_REPO_ROOT } = {}) {
     else if (argument === "--require-tools") options.requireTools = true;
     else if (argument === "--require-evidence") options.requireEvidence = true;
     else if (argument === "--security") options.security = true;
+    else if (argument === "--no-tools") options.skipTools = true;
     else if (argument === "--no-jscpd") options.skipJscpd = true;
     else if (argument === "--no-lizard") options.skipLizard = true;
     else if (!argument.startsWith("--")) options.paths.push(argument);
@@ -155,6 +157,46 @@ async function runLizard(repoRoot, reportRoot, files, strict) {
   return { available: gate.available, review, gate };
 }
 
+const QUALITY_TOOLS = [
+  {
+    key: "clippy",
+    report: "clippy.txt",
+    command: "cargo",
+    args: ["clippy", "--all-targets", "--all-features", "--", "-D", "warnings"],
+  },
+  {
+    key: "eslint",
+    report: "eslint.txt",
+    command: "pnpm",
+    args: ["exec", "eslint", "frontend/src", "bridge/rustproxyhub", "--max-warnings", "0"],
+  },
+  {
+    key: "cargo_machete",
+    report: "cargo-machete.txt",
+    command: "cargo",
+    args: ["machete"],
+  },
+];
+
+function commandMissing(result) {
+  return result.missing || /(?:command .* not found|no such command|not found)/i.test(result.stderr);
+}
+
+async function runQualityTools(repoRoot, reportRoot) {
+  const tools = {};
+  for (const spec of QUALITY_TOOLS) {
+    const result = await runCommand(spec.command, spec.args, { cwd: repoRoot });
+    const missing = commandMissing(result);
+    tools[spec.key] = {
+      enabled: true,
+      available: !missing,
+      exit_code: missing ? null : result.code,
+    };
+    await writeReport(reportRoot, spec.report, result.stdout || result.stderr || (missing ? "tool unavailable" : "no findings"));
+  }
+  return tools;
+}
+
 async function runTrivy(repoRoot, reportRoot) {
   const reportPath = resolve(reportRoot, "trivy.json");
   const result = await runCommand(
@@ -187,12 +229,26 @@ async function runTrivy(repoRoot, reportRoot) {
 
 export function evaluateQualityGate(summary, options) {
   const failures = [];
+  const warnings = [];
   if (summary.file_size.oversized > 0) failures.push(`${summary.file_size.oversized} oversized source file(s)`);
+  else if (summary.file_size.review > 0) warnings.push(`${summary.file_size.review} source file(s) need size review`);
+
+  const duplication = summary.jscpd.duplication_percent;
   if (summary.jscpd.enabled && summary.jscpd.available && summary.jscpd.exit_code !== 0) {
-    failures.push(`duplication gate failed (${summary.jscpd.duplication_percent ?? "unknown"}%)`);
+    if (duplication == null || duplication > POLICY.duplication.hardPercent || options.strict) {
+      failures.push(`duplication gate failed (${duplication ?? "unknown"}%)`);
+    }
+  }
+  if (summary.jscpd.enabled && summary.jscpd.available && duplication != null && duplication > POLICY.duplication.reviewPercent) {
+    if (duplication <= POLICY.duplication.hardPercent && summary.jscpd.exit_code === 0) {
+      warnings.push(`duplication ${duplication}% > ${POLICY.duplication.reviewPercent}%`);
+    }
   }
   if (summary.lizard.enabled && summary.lizard.available && summary.lizard.exit_code !== 0) {
     failures.push("complexity gate failed");
+  } else if (summary.lizard.enabled && summary.lizard.available && summary.lizard.review_exit_code != null && summary.lizard.review_exit_code !== 0) {
+    if (options.strict) failures.push("complexity review gate failed");
+    else warnings.push("complexity review has findings");
   }
   if (summary.coverage.available && summary.coverage.lines_percent != null && summary.coverage.lines_percent < options.coverageMin) {
     failures.push(`line coverage ${summary.coverage.lines_percent}% < ${options.coverageMin}%`);
@@ -203,16 +259,23 @@ export function evaluateQualityGate(summary, options) {
   if (summary.security.enabled && summary.security.available && summary.security.exit_code !== 0) {
     failures.push(`${summary.security.findings ?? "security"} high/critical security finding(s)`);
   }
+  for (const [name, tool] of Object.entries(summary.tools ?? {})) {
+    if (tool.enabled && tool.available && tool.exit_code !== 0) failures.push(`${name} check failed`);
+  }
   if (options.requireTools) {
     if (summary.jscpd.enabled && !summary.jscpd.available) failures.push("required tool missing: jscpd");
     if (summary.lizard.enabled && !summary.lizard.available) failures.push("required tool missing: lizard");
     if (summary.security.enabled && !summary.security.available) failures.push("required tool missing: trivy");
+    for (const [name, tool] of Object.entries(summary.tools ?? {})) {
+      if (tool.enabled && !tool.available) failures.push(`required tool missing: ${name}`);
+    }
   }
   if (options.requireEvidence) {
     if (!summary.coverage.available) failures.push("coverage evidence missing");
     if (!summary.tests.available) failures.push("test-result evidence missing");
   }
-  return { status: failures.length ? "fail" : "pass", failures };
+  const status = failures.length || (options.strict && warnings.length) ? "fail" : "pass";
+  return warnings.length ? { status, failures, warnings } : { status, failures };
 }
 
 export async function main(argv = process.argv.slice(2)) {
@@ -235,7 +298,7 @@ export async function main(argv = process.argv.slice(2)) {
         reporters: ["json", "sarif"],
         minLines: DEFAULT_MIN_LINES,
         minTokens: DEFAULT_MIN_TOKENS,
-        threshold: DEFAULT_THRESHOLD,
+        threshold: options.strict ? POLICY.duplication.reviewPercent : POLICY.duplication.hardPercent,
         mode: options.strict ? "strict" : "mild",
         ignores: DEFAULT_IGNORES,
         blame: false,
@@ -253,6 +316,8 @@ export async function main(argv = process.argv.slice(2)) {
     : await runLizard(repoRoot, reportRoot, fileSize.files, options.strict);
   await writeReport(reportRoot, "lizard-review.txt", lizard.review?.stdout || lizard.review?.stderr || (lizard.available ? "lizard: no findings" : "lizard unavailable"));
   await writeReport(reportRoot, "lizard-gate.txt", lizard.gate?.stdout || lizard.gate?.stderr || (lizard.available ? "lizard: no findings" : "lizard unavailable"));
+
+  const tools = options.skipTools ? {} : await runQualityTools(repoRoot, reportRoot);
 
   const coverage = await collectCoverage(repoRoot, options.coverageFiles);
   const tests = await collectTestResults(repoRoot, options.testFiles);
@@ -291,6 +356,8 @@ export async function main(argv = process.argv.slice(2)) {
       available: Boolean(lizard.available),
       exit_code: lizard.gate?.code ?? null,
       review_exit_code: lizard.review?.code ?? null,
+      findings: parseLizardFindings(lizard.review?.stdout ?? "").length,
+      hard_findings: parseLizardFindings(lizard.gate?.stdout ?? "").length,
     },
     coverage: {
       available: coverage.available,
@@ -318,9 +385,11 @@ export async function main(argv = process.argv.slice(2)) {
       high: security.metrics?.high ?? null,
       critical: security.metrics?.critical ?? null,
     },
+    tools,
     policy: {
       file_lines_review: POLICY.file.review,
       file_lines_hard: POLICY.file.hard,
+      duplication_percent_review: POLICY.duplication.reviewPercent,
       duplication_percent_max: POLICY.duplication.hardPercent,
       complexity_review: POLICY.complexity.review,
       complexity_hard: POLICY.complexity.hard,
@@ -332,7 +401,7 @@ export async function main(argv = process.argv.slice(2)) {
   await writeReport(reportRoot, "summary.json", JSON.stringify(summary, null, 2));
   const report = await writeQualityReport({ repoRoot, reportRoot, summary, fileSize, testResults: tests });
   console.log(report);
-  return summary.gate.status === "pass" ? 0 : 1;
+  return summary.gate.status === "fail" ? 1 : 0;
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {

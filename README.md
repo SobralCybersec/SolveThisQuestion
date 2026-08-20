@@ -48,4 +48,8 @@ pnpm quality:install
 pnpm quality
 ```
 
-`quality:install` installs pinned `jscpd` and Lizard dependencies, plus the Rust Clippy component. Reports are written to `reports/quality/`. `quality` runs Node tests, strict Clippy, benchmarks, file-size checks, duplication checks, and Lizard complexity checks. The terminal ends with a Code Quality Report containing Lizard, JSCPD, test, coverage, source-extension, and benchmark tables.
+`quality:install` installs pinned `jscpd` and Lizard dependencies, ESLint, the Rust Clippy component, and `cargo-machete`. Reports are written to `reports/quality/`. `quality` runs tests, line coverage, Clippy, ESLint, cargo-machete, benchmarks, jscpd, file-size checks, and Lizard over `src`, `bridge/rustproxyhub`, and `frontend/src`.
+
+Quality policy: files `<=400` lines are good, `401-800` need review, and `>800` fail; functions use NLOC `<=50` / `51-80` / `>80`, CCN `<=10` / `11-15` / `>15`, parameters `<=4` / `5-6` / `>6`, and nesting `<=3` / `>3`; duplication is good `<=3%`, warning `>3-5%`, and fail `>5%`. Final report includes `BAD (FAIL)`, `MUST FIX (WARNING)`, and `GOOD` columns plus separate Rust, bridge, and frontend areas.
+
+Default gate blocks `BAD(FAIL)` only and prints `MUST FIX(WARNING)` as advisories; pass `--strict` to make warnings blocking.

@@ -32,28 +32,32 @@ export function removeStaleChromiumProfileLock(profileDir) {
   return true
 }
 
-function profilePidFromLine(line, expected) {
-  const trimmed = line.trim()
+function processPidFromLine(trimmed) {
   const separator = trimmed.indexOf(' ')
   if (separator < 1) return null
   const pid = Number(trimmed.slice(0, separator))
   if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return null
-  const args = trimmed.slice(separator + 1)
+  return { pid, args: trimmed.slice(separator + 1) }
+}
+
+function profileArgument(args) {
   const marker = '--user-data-dir='
   const start = args.indexOf(marker)
-  if (start < 0) return null
+  if (start < 0) return ''
   const value = args.slice(start + marker.length).trimStart()
   const quote = value[0]
   const quoted = quote === '"' || quote === "'"
-  let end = value.indexOf(' ')
-  let offset = 0
-  if (quoted) {
-    end = value.indexOf(quote, 1)
-    offset = 1
-  }
+  const offset = quoted ? 1 : 0
+  let end = quoted ? value.indexOf(quote, 1) : value.indexOf(' ')
   if (end < 0) end = value.length
-  const userData = value.slice(offset, end)
-  return userData && path.resolve(userData) === expected ? pid : null
+  return value.slice(offset, end)
+}
+
+function profilePidFromLine(line, expected) {
+  const process = processPidFromLine(line.trim())
+  if (!process) return null
+  const userData = profileArgument(process.args)
+  return userData && path.resolve(userData) === expected ? process.pid : null
 }
 
 export function chromiumProcessesUsingProfile(profileDir) {

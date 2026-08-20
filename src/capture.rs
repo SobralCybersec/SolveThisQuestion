@@ -113,22 +113,65 @@ async fn notify(summary: &str, body: String) {
     .await;
 }
 
+fn capture_event_data(run_id: Uuid, output: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "run_id": run_id,
+        "url": output["url"],
+        "title": output["title"],
+        "screenshot": output["screenshot"],
+        "screenshot_size": output["screenshot_size"],
+        "viewport": output["viewport"],
+        "elements": output["elements"],
+        "images": output["images"],
+        "image_upload": output["image_upload"],
+        "image_analyzed": output["image_analyzed"],
+        "web_search": output["web_search"],
+    })
+}
+
+fn answer_event_data(
+    run_id: Uuid,
+    answer: &str,
+    short: &str,
+    code: Option<&(String, String)>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "run_id": run_id,
+        "answer": answer,
+        "short_answer": short,
+        "code": code.map(|(_, code)| code),
+        "language": code.map(|(language, _)| language),
+    })
+}
+
+async fn deliver_code(state: &AppState, mode: &str, language: &str, code_text: String) {
+    match mode {
+        "type" => {
+            let clear_first = env_bool("SCREEN_AGENT_TYPE_CLEAR_FIRST", true);
+            let typed = code_text.clone();
+            let result = tokio::task::spawn_blocking(move || auto_type(&typed, clear_first)).await;
+            match result {
+                Ok(Ok(())) => {
+                    notify("Screen Agent", format!("Auto-typed {language} solution")).await
+                }
+                _ => {
+                    notify(
+                        "Screen Agent — auto-type unavailable",
+                        "Install wtype (Wayland) or ydotool. Answer is in the app.".to_owned(),
+                    )
+                    .await
+                }
+            }
+        }
+        "overlay" => show_overlay(state, &code_text, language).await,
+        _ => notify("Screen Agent answer", code_text).await,
+    }
+}
+
 pub(crate) async fn publish_success(state: &AppState, run_id: Uuid, output: serde_json::Value) {
     let _ = state.events.send(AgentEvent {
         event: "capture.ready".to_owned(),
-        data: serde_json::json!({
-            "run_id": run_id,
-            "url": output["url"],
-            "title": output["title"],
-            "screenshot": output["screenshot"],
-            "screenshot_size": output["screenshot_size"],
-            "viewport": output["viewport"],
-            "elements": output["elements"],
-            "images": output["images"],
-            "image_upload": output["image_upload"],
-            "image_analyzed": output["image_analyzed"],
-            "web_search": output["web_search"],
-        }),
+        data: capture_event_data(run_id, &output),
     });
     let answer = output
         .get("answer")
@@ -138,42 +181,15 @@ pub(crate) async fn publish_success(state: &AppState, run_id: Uuid, output: serd
     let code = parse_code_answer(&short);
     let _ = state.events.send(AgentEvent {
         event: "answer.ready".to_owned(),
-        data: serde_json::json!({
-            "run_id": run_id,
-            "answer": answer,
-            "short_answer": short,
-            "code": code.as_ref().map(|(_, code)| code),
-            "language": code.as_ref().map(|(language, _)| language),
-        }),
+        data: answer_event_data(run_id, answer, &short, code.as_ref()),
     });
 
     let mode = state.proxy.read().await.code_delivery.clone();
     if let Some((language, code_text)) = code {
-        match mode.as_str() {
-            "type" => {
-                let clear_first = env_bool("SCREEN_AGENT_TYPE_CLEAR_FIRST", true);
-                let typed = code_text.clone();
-                let result =
-                    tokio::task::spawn_blocking(move || auto_type(&typed, clear_first)).await;
-                match result {
-                    Ok(Ok(())) => {
-                        notify("Screen Agent", format!("Auto-typed {language} solution")).await
-                    }
-                    _ => {
-                        notify(
-                            "Screen Agent — auto-type unavailable",
-                            "Install wtype (Wayland) or ydotool. Answer is in the app.".to_owned(),
-                        )
-                        .await
-                    }
-                }
-            }
-            "overlay" => show_overlay(state, &code_text, &language).await,
-            _ => notify("Screen Agent answer", code_text).await,
-        }
-        return;
+        deliver_code(state, &mode, &language, code_text).await;
+    } else {
+        notify("Screen Agent answer", short).await;
     }
-    notify("Screen Agent answer", short).await;
 }
 
 pub(crate) fn trigger_desktop_capture(app: tauri::AppHandle) {
@@ -221,34 +237,35 @@ fn wlr_capture(path: &std::path::Path) -> Result<serde_json::Value> {
     }))
 }
 
+fn capture_screen(path: &std::path::Path) -> Result<serde_json::Value> {
+    #[cfg(target_os = "linux")]
+    if env::var_os("WAYLAND_DISPLAY").is_some() {
+        match wlr_capture(path) {
+            Ok(viewport) => return Ok(viewport),
+            Err(error) => tracing::debug!(%error, "wlr-screencopy unavailable, falling back"),
+        }
+    }
+    let monitors = Monitor::all().context("enumerate monitors")?;
+    let primary = monitors
+        .iter()
+        .find(|monitor| monitor.is_primary().unwrap_or(false))
+        .or_else(|| monitors.first())
+        .context("no monitor available")?;
+    let image = primary.capture_image().context("capture primary monitor")?;
+    let viewport = serde_json::json!({
+        "width": image.width(),
+        "height": image.height(),
+        "device_pixel_ratio": 1,
+    });
+    image.save(path).context("write desktop screenshot")?;
+    Ok(viewport)
+}
+
 pub(crate) async fn capture_desktop(state: &AppState, run_id: Uuid) -> Result<serde_json::Value> {
     let screenshot_path = state.runtime.join("captures").join(format!("{run_id}.png"));
     let screenshot_url = format!("/captures/{run_id}.png");
     let path = screenshot_path.clone();
-    let viewport = tokio::task::spawn_blocking(move || -> Result<serde_json::Value> {
-        #[cfg(target_os = "linux")]
-        if env::var_os("WAYLAND_DISPLAY").is_some() {
-            match wlr_capture(&path) {
-                Ok(viewport) => return Ok(viewport),
-                Err(error) => tracing::debug!(%error, "wlr-screencopy unavailable, falling back"),
-            }
-        }
-        let monitors = Monitor::all().context("enumerate monitors")?;
-        let primary = monitors
-            .iter()
-            .find(|monitor| monitor.is_primary().unwrap_or(false))
-            .or_else(|| monitors.first())
-            .context("no monitor available")?;
-        let image = primary.capture_image().context("capture primary monitor")?;
-        let viewport = serde_json::json!({
-            "width": image.width(),
-            "height": image.height(),
-            "device_pixel_ratio": 1,
-        });
-        image.save(&path).context("write desktop screenshot")?;
-        Ok(viewport)
-    })
-    .await??;
+    let viewport = tokio::task::spawn_blocking(move || capture_screen(&path)).await??;
     let prompt = prompt_with_short_answer(
         env::var("SCREEN_AGENT_SCREEN_PROMPT").unwrap_or_else(|_| default_screen_prompt()),
     );

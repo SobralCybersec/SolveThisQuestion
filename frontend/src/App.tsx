@@ -92,18 +92,42 @@ function RunCard(props: RunCardProps) {
   </Card>;
 }
 
+function AnswerDetails({ elements }: { elements?: PageElement[] }) {
+  const items = (elements || []).slice(0, 20)
+  return <details className="element-inspector">
+    <summary>{elements?.length || 0} page elements extracted</summary>
+    <ul>{items.map((element, index) => <li key={`${element.tag}-${index}`}><code>{element.tag}</code><span>{element.text || element.href || "unnamed"}</span></li>)}</ul>
+  </details>
+}
+
+function AnswerMeta({ capture }: { capture: EventData }) {
+  return <div className="answer-meta">
+    <span>{capture.image_analyzed ? "Image analyzed" : "Screenshot captured"}</span>
+    <span>{capture.image_upload?.status === "uploaded" ? "ImgLink uploaded" : "Local image"}</span>
+    <span>{capture.web_search ? "Web search" : "Local context"}</span>
+    <span>{capture.title || "Captured page"}</span>
+  </div>
+}
+
+function AnswerContent({ answer, capture }: { answer: string; capture: EventData }) {
+  return <div className="answer-body">
+    {capture.screenshot && <img className="capture-preview" src={`${API_BASE}${capture.screenshot}`} alt={`Screenshot of ${capture.title || "captured page"}`} />}
+    <p>{answer}</p>
+    <AnswerDetails elements={capture.elements} />
+    <AnswerMeta capture={capture} />
+  </div>
+}
+
+function AnswerEmpty({ state, error }: { state: RunState; error: string }) {
+  const message = state === "capturing" ? "Reading viewport and page text…" : state === "error" ? error : "Your answer will land here."
+  const detail = state === "error" ? "Check bridge, proxy, and target URL." : "Run agent to start a fresh capture."
+  return <div className="empty"><div className="empty-ring">✦</div><p>{message}</p><span>{detail}</span></div>
+}
+
 function AnswerCard({ state, answer, capture, error }: { state: RunState; answer: string; capture: EventData; error: string }) {
   return <Card className="answer-card">
     <div className="card-head"><h2>Answer</h2></div>
-    {state === "answer" ? <div className="answer-body">
-      {capture.screenshot && <img className="capture-preview" src={`${API_BASE}${capture.screenshot}`} alt={`Screenshot of ${capture.title || "captured page"}`} />}
-      <p>{answer}</p>
-      <details className="element-inspector">
-        <summary>{capture.elements?.length || 0} page elements extracted</summary>
-        <ul>{(capture.elements || []).slice(0, 20).map((element, index) => <li key={`${element.tag}-${index}`}><code>{element.tag}</code><span>{element.text || element.href || "unnamed"}</span></li>)}</ul>
-      </details>
-      <div className="answer-meta"><span>{capture.image_analyzed ? "Image analyzed" : "Screenshot captured"}</span><span>{capture.image_upload?.status === "uploaded" ? "ImgLink uploaded" : "Local image"}</span><span>{capture.web_search ? "Web search" : "Local context"}</span><span>{capture.title || "Captured page"}</span></div>
-    </div> : <div className="empty"><div className="empty-ring">✦</div><p>{state === "capturing" ? "Reading viewport and page text…" : state === "error" ? error : "Your answer will land here."}</p><span>{state === "error" ? "Check bridge, proxy, and target URL." : "Run agent to start a fresh capture."}</span></div>}
+    {state === "answer" ? <AnswerContent answer={answer} capture={capture} /> : <AnswerEmpty state={state} error={error} />}
   </Card>;
 }
 

@@ -17,8 +17,12 @@
     "test:report": "node -e \"require('node:fs').mkdirSync('reports/quality',{recursive:true})\" && node --test --test-concurrency=1 --experimental-test-coverage --test-coverage-include=bridge/rustproxyhub/chatgpt-web-flow.mjs --test-coverage-include=bridge/rustproxyhub/prompt-compaction.mjs --test-coverage-include=bridge/rustproxyhub/chatgpt-web-response.mjs --test-coverage-include=bridge/rustproxyhub/chatgpt-web-session.mjs --test-reporter=junit --test-reporter-destination=reports/quality/bridge-tests.xml --test-reporter=lcov --test-reporter-destination=reports/quality/lcov.info bridge/test/*.test.mjs",
     "quality:tests": "node --test --test-concurrency=1 scripts/tests/*.node-test.mjs",
     "quality:clippy": "cargo clippy --all-targets --all-features -- -D warnings",
-    "quality": "npm run quality:tests && npm run test:report && npm run quality:clippy && npm run benchmark && node scripts/tests/quality-review.mjs --root . --test-report reports/quality/bridge-tests.xml",
-    "quality:install": "pnpm install && python -m venv .quality-venv && .quality-venv/bin/python -m pip install -r requirements-quality.txt && rustup component add clippy",
+    "quality:eslint": "eslint frontend/src bridge/rustproxyhub --max-warnings 0",
+    "quality:machete": "cargo machete",
+    "quality:tools": "npm run quality:clippy && npm run quality:eslint && npm run quality:machete",
+    "quality": "npm run quality:tests && npm run test:report && npm run benchmark && node scripts/tests/quality-review.mjs --root . --require-tools --require-evidence --test-report reports/quality/bridge-tests.xml",
+    "quality:full": "npm test && npm run quality:tools && npm run quality",
+    "quality:install": "pnpm install && python -m venv .quality-venv && .quality-venv/bin/python -m pip install -r requirements-quality.txt && rustup component add clippy && cargo install cargo-machete --locked",
     "benchmark": "node benchmarks/bridge.mjs",
     "bridge:install": "pnpm --dir bridge install",
     "bridge:smoke": "pnpm --dir bridge smoke"
@@ -27,6 +31,10 @@
     "node": ">=20"
   },
   "devDependencies": {
-    "jscpd": "^5.0.16"
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.8.1",
+    "globals": "^17.11.0",
+    "jscpd": "^5.0.16",
+    "typescript-eslint": "^8.67.0"
   }
 }

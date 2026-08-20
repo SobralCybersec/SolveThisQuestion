@@ -30,20 +30,39 @@ function collectAssistantText(value, output = [], acceptsText = false, depth = 0
   return output
 }
 
-function collectNamedText(value, fields, output = [], acceptsText = false, depth = 0) {
-  if (depth > 12 || value == null) return output
-  if (typeof value === 'string') {
-    if (acceptsText && value.trim()) output.push(value)
-    return output
-  }
+function queueNamedTextChildren(options) {
+  const { pending, value, fields, acceptsText, depth } = options
   if (Array.isArray(value)) {
-    for (const item of value) collectNamedText(item, fields, output, acceptsText, depth + 1)
-    return output
-  }
-  if (typeof value === 'object') {
-    for (const [key, child] of Object.entries(value)) {
-      collectNamedText(child, fields, output, acceptsText || fields.has(key), depth + 1)
+    for (let index = value.length - 1; index >= 0; index -= 1) {
+      pending.push({ value: value[index], acceptsText, depth: depth + 1 })
     }
+    return
+  }
+  if (typeof value !== 'object') return
+  const entries = Object.entries(value)
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const [key, child] = entries[index]
+    pending.push({ value: child, acceptsText: acceptsText || fields.has(key), depth: depth + 1 })
+  }
+}
+
+function collectNamedText(value, fields, options = {}) {
+  const output = options.output || []
+  const pending = [{ value, acceptsText: Boolean(options.acceptsText), depth: options.depth || 0 }]
+  while (pending.length) {
+    const current = pending.pop()
+    if (current.depth > 12 || current.value == null) continue
+    if (typeof current.value === 'string') {
+      if (current.acceptsText && current.value.trim()) output.push(current.value)
+      continue
+    }
+    queueNamedTextChildren({
+      pending,
+      value: current.value,
+      fields,
+      acceptsText: current.acceptsText,
+      depth: current.depth,
+    })
   }
   return output
 }

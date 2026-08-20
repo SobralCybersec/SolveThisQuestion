@@ -53,6 +53,18 @@ test("quality gate reports independent failures instead of hiding them behind on
   assert.match(gate.failures.join("\n"), /security/);
 });
 
+test("quality gate classifies review findings as warnings and hard findings as failures", () => {
+  const summary = passingSummary();
+  summary.file_size.review = 1;
+  summary.jscpd.duplication_percent = 4;
+  summary.lizard.review_exit_code = 1;
+  const gate = evaluateQualityGate(summary, parseQualityArgs([], { repoRoot: "/tmp/repo" }));
+  assert.equal(gate.status, "pass");
+  assert.equal(gate.failures.length, 0);
+  assert.equal(gate.warnings.length, 3);
+  assert.equal(evaluateQualityGate(summary, parseQualityArgs(["--strict"], { repoRoot: "/tmp/repo" })).status, "fail");
+});
+
 test("missing optional tools are explicit but do not fail unless required", () => {
   const summary = passingSummary();
   summary.jscpd.available = false;
@@ -77,6 +89,10 @@ test("require-evidence distinguishes no report from zero coverage", () => {
 });
 
 test("policy separates review thresholds from hard fail thresholds", () => {
+  assert.equal(POLICY.file.review, 400);
+  assert.equal(POLICY.file.hard, 800);
+  assert.equal(POLICY.duplication.reviewPercent, 3);
+  assert.equal(POLICY.duplication.hardPercent, 5);
   assert.ok(POLICY.complexity.review.ccn < POLICY.complexity.hard.ccn);
   assert.ok(POLICY.complexity.review.nloc < POLICY.complexity.hard.nloc);
   assert.ok(POLICY.file.review < POLICY.file.hard);

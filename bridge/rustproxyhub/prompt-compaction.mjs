@@ -115,28 +115,35 @@ function keepBlock(selection, block, signature) {
   return true
 }
 
-function selectBlock(selection, blocks, index, preserveFirstBlock, result) {
+function isConversationPair(options) {
+  const { selection, block, previousBlock, index, preserveFirstBlock } = options
+  return selection.tail.length === 0
+    && blockRole(block) !== 'user'
+    && blockRole(previousBlock) === 'user'
+    && index > (preserveFirstBlock ? 0 : -1)
+}
+
+function keepTrimmedBlock(selection, block, signature) {
+  if (selection.tail.length !== 0 || selection.remaining <= 96) return false
+  const trimmed = compactLongBlock(block, selection.remaining)
+  if (!trimmed) return false
+  selection.tail.unshift(trimmed)
+  selection.seen.add(signature)
+  selection.remaining = 0
+  return true
+}
+
+function selectBlock(options) {
+  const { selection, blocks, index, preserveFirstBlock, result } = options
   const block = blocks[index]
   const signature = normalizeBlockSignature(block)
   if (!signature || selection.seen.has(signature)) return false
 
   const previousBlock = index > 0 ? blocks[index - 1] : ''
-  const isPair = selection.tail.length === 0
-    && blockRole(block) !== 'user'
-    && blockRole(previousBlock) === 'user'
-    && index > (preserveFirstBlock ? 0 : -1)
-  if (isPair && keepPair(selection, previousBlock, block)) return true
+  if (isConversationPair({ selection, block, previousBlock, index, preserveFirstBlock })
+    && keepPair(selection, previousBlock, block)) return true
   if (keepBlock(selection, block, signature)) return true
-
-  if (selection.tail.length === 0 && selection.remaining > 96) {
-    const trimmed = compactLongBlock(block, selection.remaining)
-    if (trimmed) {
-      selection.tail.unshift(trimmed)
-      selection.seen.add(signature)
-      selection.remaining = 0
-      return true
-    }
-  }
+  if (keepTrimmedBlock(selection, block, signature)) return true
   result.omittedBlocks += 1
   return false
 }
@@ -145,7 +152,7 @@ function selectTail(blocks, maxChars, preserveFirstBlock, result) {
   const selection = createSelection(blocks, maxChars, preserveFirstBlock)
   const firstIndex = preserveFirstBlock ? 1 : 0
   for (let index = blocks.length - 1; index >= firstIndex; index -= 1) {
-    if (selectBlock(selection, blocks, index, preserveFirstBlock, result) && selection.tail.length > 1) index -= 1
+    if (selectBlock({ selection, blocks, index, preserveFirstBlock, result }) && selection.tail.length > 1) index -= 1
   }
   return selection
 }
@@ -155,7 +162,8 @@ function latestTail(blocks, maxChars) {
   return pair.length <= maxChars ? pair : compactLongBlock(blocks.at(-1), maxChars)
 }
 
-function compactStructuredBlocks(result, cleaned, blocks, maxChars, preserveFirstBlock) {
+function compactStructuredBlocks(options) {
+  const { result, cleaned, blocks, maxChars, preserveFirstBlock } = options
   const selection = selectTail(blocks, maxChars, preserveFirstBlock, result)
   if (selection.firstBlock && selection.tail.length === 0 && blocks.length > 1) {
     const text = latestTail(blocks, maxChars).trim()
@@ -181,7 +189,7 @@ export function compactStructuredPrompt(
   if (cleaned.length <= maxChars) return { ...result, compactedChars: cleaned.length }
   result.removedDuplicateBlocks = countDuplicateBlocks(blocks)
   if (blocks.length <= 1) return compactSingleBlock(result, cleaned, maxChars)
-  return compactStructuredBlocks(result, cleaned, blocks, maxChars, preserveFirstBlock)
+  return compactStructuredBlocks({ result, cleaned, blocks, maxChars, preserveFirstBlock })
 }
 
 export function summarizePromptCompaction(stats) {

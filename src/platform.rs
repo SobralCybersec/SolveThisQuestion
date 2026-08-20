@@ -3,10 +3,35 @@ use std::{env, process::Command as StdCommand};
 use tauri::Manager;
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
+#[path = "hyprland_key.rs"]
+mod hyprland_key;
+
 pub(crate) fn wayland_hyprland() -> bool {
     cfg!(target_os = "linux")
         && env::var_os("WAYLAND_DISPLAY").is_some()
         && env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some()
+}
+
+fn hyprland_modifier(modifier: &str) -> Result<&'static str> {
+    match modifier.to_ascii_lowercase().as_str() {
+        "commandorcontrol" | "command" | "super" | "meta" | "win" => Ok("SUPER"),
+        "control" | "ctrl" => Ok("CTRL"),
+        "alt" | "option" => Ok("ALT"),
+        "shift" => Ok("SHIFT"),
+        other => Err(anyhow::anyhow!("unsupported Hyprland modifier: {other}")),
+    }
+}
+
+fn normalize_hyprland_key(key: &str) -> &str {
+    match key {
+        "PrintScreen" | "Printscreen" => "Print",
+        "Space" => "Space",
+        "Enter" => "Return",
+        "Escape" => "Escape",
+        value if value.starts_with("Key") && value.len() == 4 => &value[3..],
+        value if value.starts_with("Digit") && value.len() == 6 => &value[5..],
+        value => value,
+    }
 }
 
 fn hyprland_hotkey(hotkey: &str) -> Result<String> {
@@ -15,30 +40,13 @@ fn hyprland_hotkey(hotkey: &str) -> Result<String> {
         .map(str::trim)
         .filter(|part| !part.is_empty())
         .collect::<Vec<_>>();
-    let key = parts.pop().context("hotkey must include a key")?.to_owned();
+    let key = parts.pop().context("hotkey must include a key")?;
     let modifiers = parts
         .into_iter()
-        .map(|modifier| match modifier.to_ascii_lowercase().as_str() {
-            "commandorcontrol" | "command" | "super" | "meta" | "win" => Ok("SUPER"),
-            "control" | "ctrl" => Ok("CTRL"),
-            "alt" | "option" => Ok("ALT"),
-            "shift" => Ok("SHIFT"),
-            other => Err(anyhow::anyhow!("unsupported Hyprland modifier: {other}")),
-        })
+        .map(hyprland_modifier)
         .collect::<Result<Vec<_>>>()?;
-    let key = match key.as_str() {
-        "PrintScreen" | "Printscreen" => "Print",
-        "Space" => "Space",
-        "Enter" => "Return",
-        "Escape" => "Escape",
-        value if value.starts_with("Key") && value.len() == 4 => &value[3..],
-        value if value.starts_with("Digit") && value.len() == 6 => &value[5..],
-        value => value,
-    };
-    if !key
-        .chars()
-        .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | ':'))
-    {
+    let key = normalize_hyprland_key(key);
+    if key.is_empty() || !hyprland_key::valid_hyprland_key(key) {
         return Err(anyhow::anyhow!("unsupported Hyprland key: {key}"));
     }
     let key = if key.len() == 1 {
