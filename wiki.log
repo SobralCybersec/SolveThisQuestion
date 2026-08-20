@@ -13,3 +13,13 @@
 {"duration_ms":0.0,"event":"discover_files_result","invocation_id":"747175-1787157347958","meta":{"count":0},"pid":747175,"status":"ok","timestamp_ms":1787157347970}
 {"duration_ms":11.96322,"event":"discover_files","invocation_id":"747175-1787157347958","meta":{"globs":[]},"pid":747175,"status":"ok","timestamp_ms":1787157347971}
 {"duration_ms":12.17584,"event":"command_finish","invocation_id":"747175-1787157347958","meta":{"command":"check","exit_code":2},"pid":747175,"status":"ok","timestamp_ms":1787157347971}
+{"duration_ms":0.0,"event":"command_start","invocation_id":"668900-1787244252122","meta":{"command":"check","json_output":true},"pid":668900,"status":"ok","timestamp_ms":1787244252122}
+{"duration_ms":2.010034,"event":"startup","invocation_id":"668900-1787244252122","meta":{"command":"check"},"pid":668900,"status":"ok","timestamp_ms":1787244252122}
+{"duration_ms":0.0,"event":"discover_files_result","invocation_id":"668900-1787244252122","meta":{"count":0},"pid":668900,"status":"ok","timestamp_ms":1787244252138}
+{"duration_ms":16.256404,"event":"discover_files","invocation_id":"668900-1787244252122","meta":{"globs":[]},"pid":668900,"status":"ok","timestamp_ms":1787244252139}
+{"duration_ms":16.64204,"event":"command_finish","invocation_id":"668900-1787244252122","meta":{"command":"check","exit_code":2},"pid":668900,"status":"ok","timestamp_ms":1787244252139}
+{"duration_ms":0.0,"event":"command_start","invocation_id":"685495-1787245229078","meta":{"command":"check","json_output":true},"pid":685495,"status":"ok","timestamp_ms":1787245229078}
+{"duration_ms":1.6840410000000001,"event":"startup","invocation_id":"685495-1787245229078","meta":{"command":"check"},"pid":685495,"status":"ok","timestamp_ms":1787245229079}
+{"duration_ms":0.0,"event":"discover_files_result","invocation_id":"685495-1787245229078","meta":{"count":0},"pid":685495,"status":"ok","timestamp_ms":1787245229091}
+{"duration_ms":12.688789,"event":"discover_files","invocation_id":"685495-1787245229078","meta":{"globs":[]},"pid":685495,"status":"ok","timestamp_ms":1787245229092}
+{"duration_ms":13.024740999999999,"event":"command_finish","invocation_id":"685495-1787245229078","meta":{"command":"check","exit_code":2},"pid":685495,"status":"ok","timestamp_ms":1787245229092}
