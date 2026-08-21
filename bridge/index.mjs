@@ -1,24 +1,24 @@
 import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { spawn } from "node:child_process";
 import path from "node:path";
 import process from "node:process";
 import readline from "node:readline";
-import { fileURLToPath } from "node:url";
 import { uploadImageWithFallback } from "./image-upload.mjs";
 import { passCaptchaIfChallenged } from "./captcha.js";
+import {
+  askProxy,
+  chat,
+  embeddedCloseLogin,
+  embeddedLogin,
+  embeddedStatus,
+  envBool,
+  resetEmbeddedProxy,
+} from "./chat-runtime.mjs";
 
-const { applyStealthScripts, baseLaunchOptions, chromium } = await import("./rustproxyhub/browser-runtime.mjs");
+const { applyStealthScripts, baseLaunchOptions, bridgeDebug, chromium } = await import("./rustproxyhub/browser-runtime.mjs");
 const runtime = process.env.SCREEN_AGENT_RUNTIME || path.resolve(".runtime");
 const captureDir = path.join(runtime, "captures");
-const embeddedBridge = path.join(path.dirname(fileURLToPath(import.meta.url)), "rustproxyhub/index.mjs");
-let activeEmbeddedProxy = null;
 let activeCaptureBrowser = null;
-
-function envBool(name, fallback) {
-  const value = process.env[name]?.trim().toLowerCase();
-  return value == null || value === "" ? fallback : !["0", "false", "no", "off"].includes(value);
-}
 
 const BROWSER_PATH_NAMES = [
   "chromium",
@@ -57,7 +57,7 @@ function captureLaunchOptions() {
 }
 
 async function waitForTargetReady(page) {
-  await page.waitForLoadState("networkidle", { timeout: envMs("SCREEN_AGENT_NETWORK_IDLE_MS", 5000) }).catch(() => {});
+  await page.waitForLoadState("networkidle", { timeout: envMs("SCREEN_AGENT_NETWORK_IDLE_MS", 100) }).catch(() => {});
   const deadline = Date.now() + envMs("SCREEN_AGENT_CHALLENGE_WAIT_MS", 30_000);
   while (Date.now() < deadline) {
     const challenged = await page.evaluate(() => {
@@ -95,22 +95,6 @@ async function uploadScreenshot(screenshot, required = false) {
   return uploadImageWithFallback(screenshot);
 }
 
-function buildPrompt(prompt, pageState, imageUpload, webSearch = false) {
-  const normalizedPrompt = prompt.replace(/@WebSearch\b/gi, "@Web search");
-  const preparedPrompt = webSearch && !/@Web search\s*$/i.test(normalizedPrompt.trim())
-    ? `${normalizedPrompt.trim()}\n\n@Web search`
-    : normalizedPrompt;
-  const upload = imageUpload?.url || "local capture only";
-  if (pageState.url === "desktop://screen") {
-    // The screenshot is attached to the message directly; only add an upload
-    // line when there's a real hosted URL worth referencing.
-    const replaced = preparedPrompt.replace(/Screenshot upload:\s*\[uploaded image\]/i, `Screenshot upload: ${upload}`);
-    if (imageUpload?.url && !replaced.includes(imageUpload.url)) return `${replaced}\n\nScreenshot upload: ${imageUpload.url}`;
-    return replaced;
-  }
-  return `${preparedPrompt}\n\nPage URL: ${pageState.url}\nPage text:\n${pageState.text}\n\nPage elements:\n${JSON.stringify(pageState.elements || [])}\n\nVisible image inventory:\n${JSON.stringify(pageState.images || [])}\n\nScreenshot upload: ${upload}`;
-}
-
 async function openTargetPage(page, targetUrl) {
   const pathname = new URL(targetUrl).pathname;
   if (/\.(png|jpe?g|webp|gif|svg)$/i.test(pathname)) {
@@ -129,16 +113,22 @@ async function openTargetPage(page, targetUrl) {
 }
 
 async function analyze(command) {
+  const startedAt = Date.now();
+  const mark = (phase) => bridgeDebug(`capture timing phase=${phase} elapsed_ms=${Date.now() - startedAt}`);
+  mark("start");
   await fs.mkdir(captureDir, { recursive: true });
   const browser = await ensureCaptureBrowser();
+  mark("browser-ready");
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   try {
     await applyStealthScripts(context);
     const page = await context.newPage();
     const target = await openTargetPage(page, command.url);
+    mark("target-ready");
     const captcha = await passCaptchaIfChallenged(page, {
       settleMs: envMs("SCREEN_AGENT_CAPTCHA_SETTLE_MS", 2500),
     });
+    mark("captcha-check");
     await waitForTargetReady(page);
     await page.waitForFunction(() => Array.from(document.images).filter((image) => {
       const rect = image.getBoundingClientRect();
@@ -189,8 +179,11 @@ async function analyze(command) {
         })),
       };
     }, target.url);
+    mark("page-state-ready");
     const imageUpload = await uploadScreenshot(screenshot);
+    mark("screenshot-ready");
     const result = await askProxy(command.prompt, pageState, screenshot, Boolean(command.web_search), imageUpload);
+    mark("answer-ready");
     return { ...pageState, captcha, screenshot: `/captures/${id}.png`, screenshot_size: screenshotSize, image_upload: imageUpload, answer: result.text, image_analyzed: result.image, web_search: Boolean(command.web_search) };
   } finally {
     await context.close().catch(() => {});
@@ -223,293 +216,6 @@ async function analyzeScreenshot(command) {
     image_analyzed: result.image,
     web_search: Boolean(command.web_search),
   };
-}
-
-async function askProxy(prompt, pageState, screenshot, webSearch, imageUpload) {
-  const proxy = (process.env.RUST_PROXY_HUB_URL || process.env.GPT_PROXY_URL)?.replace(/\/$/, "");
-  if (!proxy) {
-    return askEmbeddedProxy(prompt, pageState, screenshot, webSearch, imageUpload);
-  }
-  const image = (await fs.readFile(screenshot)).toString("base64");
-  const apiKey = process.env.RUST_PROXY_HUB_API_KEY || process.env.GPT_PROXY_API_KEY;
-  const model = process.env.GPT_PROXY_MODEL || "chatgpt:chatgpt-web-session";
-  const chatgptMode = process.env.GPT_PROXY_CHATGPT_MODE || "web";
-  const sessionId = process.env.GPT_PROXY_SESSION_ID;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 240000);
-  let response;
-  try {
-    response = await fetch(`${proxy}/v1/chat/completions`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        ...(apiKey ? { authorization: `Bearer ${apiKey}`, "x-api-key": apiKey } : {}),
-      },
-      signal: controller.signal,
-      body: JSON.stringify({
-        model,
-        stream: false,
-        ...(sessionId ? { user: sessionId } : {}),
-        chatgpt_mode: chatgptMode,
-        web_search: webSearch,
-        messages: [{
-          role: "user",
-          content: [
-            { type: "text", text: buildPrompt(prompt, pageState, imageUpload, webSearch) },
-            { type: "image_url", image_url: { url: `data:image/png;base64,${image}` } },
-          ],
-        }],
-      }),
-    });
-  } finally {
-    clearTimeout(timeout);
-  }
-  const raw = await response.text();
-  if (!response.ok) throw new Error(`GPT proxy returned ${response.status}: ${raw.slice(0, 400)}`);
-  const payload = JSON.parse(raw);
-  const content = payload.choices?.[0]?.message?.content;
-  if (typeof content === "string") return { text: content, image: true };
-  if (Array.isArray(content)) return { text: content.map((part) => part?.text || "").join("").trim(), image: true };
-  return { text: "Proxy returned an empty answer.", image: true };
-}
-
-function responseText(message) {
-  const content = message?.content;
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) return content.map((part) => part?.text || "").join("").trim();
-  return "";
-}
-
-async function chat(command) {
-  const prompt = String(command.prompt || "").trim();
-  const proxy = (process.env.RUST_PROXY_HUB_URL || process.env.GPT_PROXY_URL)?.replace(/\/$/, "");
-  const history = Array.isArray(command.history)
-    ? command.history.filter((message) => ["user", "assistant"].includes(message?.role) && typeof message?.content === "string")
-    : [];
-  if (!proxy) {
-    const embedded = await ensureEmbeddedProxy();
-    try {
-      const result = await embedded.call("chatgpt", "chat", {
-        model: process.env.GPT_PROXY_MODEL || "chatgpt:chatgpt-web-session",
-        chatgpt_mode: process.env.GPT_PROXY_CHATGPT_MODE || "web",
-        session_id: process.env.GPT_PROXY_SESSION_ID || "screen-agent",
-        prompt,
-        history,
-        web_search: Boolean(command.web_search),
-        stream: false,
-        runtime_dir: runtime,
-        browser: "chromium",
-        headless: envBool("SCREEN_AGENT_CHATGPT_HEADLESS", true),
-      });
-      return { text: result?.text || "Embedded proxy returned an empty answer.", reasoning_content: result?.reasoning_content || null };
-    } catch (error) {
-      await resetEmbeddedProxy();
-      throw error;
-    }
-  }
-  const apiKey = process.env.RUST_PROXY_HUB_API_KEY || process.env.GPT_PROXY_API_KEY;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 240000);
-  let response;
-  try {
-    response = await fetch(`${proxy}/v1/chat/completions`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        ...(apiKey ? { authorization: `Bearer ${apiKey}`, "x-api-key": apiKey } : {}),
-      },
-      signal: controller.signal,
-      body: JSON.stringify({
-        model: process.env.GPT_PROXY_MODEL || "chatgpt:chatgpt-web-session",
-        stream: false,
-        ...(process.env.GPT_PROXY_SESSION_ID ? { user: process.env.GPT_PROXY_SESSION_ID } : {}),
-        chatgpt_mode: process.env.GPT_PROXY_CHATGPT_MODE || "web",
-        web_search: Boolean(command.web_search),
-        messages: [...history, { role: "user", content: prompt }],
-      }),
-    });
-  } finally {
-    clearTimeout(timeout);
-  }
-  const raw = await response.text();
-  if (!response.ok) throw new Error(`GPT proxy returned ${response.status}: ${raw.slice(0, 400)}`);
-  const payload = JSON.parse(raw);
-  const message = payload.choices?.[0]?.message || {};
-  return {
-    text: responseText(message) || "Proxy returned an empty answer.",
-    reasoning_content: typeof message.reasoning_content === "string" ? message.reasoning_content : null,
-  };
-}
-
-function startEmbeddedProxy() {
-  const child = spawn(process.execPath, [embeddedBridge], {
-    cwd: path.dirname(embeddedBridge),
-    env: { ...process.env },
-    stdio: ["pipe", "pipe", "pipe"],
-  });
-  let buffer = "";
-  let nextId = 1;
-  const pending = new Map();
-  const rejectAll = (error) => {
-    for (const request of pending.values()) request.reject(error);
-    pending.clear();
-  };
-  child.stdout.setEncoding("utf8");
-  child.stdout.on("data", (chunk) => {
-    buffer += chunk;
-    let index = buffer.indexOf("\n");
-    while (index !== -1) {
-      const line = buffer.slice(0, index).trim();
-      buffer = buffer.slice(index + 1);
-      if (line) {
-        try {
-          const message = JSON.parse(line);
-          const request = pending.get(message.id);
-          if (request && !message.event) {
-            pending.delete(message.id);
-            message.error ? request.reject(new Error(message.error)) : request.resolve(message.result);
-          }
-        } catch (error) {
-          rejectAll(error instanceof Error ? error : new Error(String(error)));
-        }
-      }
-      index = buffer.indexOf("\n");
-    }
-  });
-  child.stderr.on("data", (chunk) => process.stderr.write(`[embedded-proxy] ${chunk}`));
-  child.on("error", rejectAll);
-  child.on("exit", (code) => {
-    if (pending.size) rejectAll(new Error(`embedded proxy exited with code ${code}`));
-  });
-  const waitForExit = () => child.exitCode !== null
-    ? Promise.resolve()
-    : new Promise((resolve) => child.once("exit", resolve));
-  const waitForExitOrTimeout = () => Promise.race([
-    waitForExit(),
-    new Promise((resolve) => setTimeout(resolve, 5000)),
-  ]);
-  return {
-    call(provider, method, params = {}) {
-      const id = nextId++;
-      return new Promise((resolve, reject) => {
-        pending.set(id, { resolve, reject });
-        child.stdin.write(`${JSON.stringify({ id, provider, method, params })}\n`);
-      });
-    },
-    async close() {
-      try { await this.call("chatgpt", "shutdown"); } catch {}
-      child.stdin.end();
-      await waitForExitOrTimeout();
-      if (child.exitCode === null) {
-        child.kill("SIGTERM");
-        await waitForExitOrTimeout();
-      }
-    },
-  };
-}
-
-// Keep one embedded proxy (and its logged-in ChatGPT browser) warm for the life
-// of the bridge process so captures don't relaunch Chromium every time.
-async function ensureEmbeddedProxy() {
-  await fs.mkdir(runtime, { recursive: true });
-  if (activeEmbeddedProxy) return activeEmbeddedProxy;
-  const proxy = startEmbeddedProxy();
-  activeEmbeddedProxy = proxy;
-  try {
-    await proxy.call("chatgpt", "init", {
-    runtime_dir: runtime,
-    headless: envBool("SCREEN_AGENT_CHATGPT_HEADLESS", true),
-    browser: "chromium",
-    });
-    return proxy;
-  } catch (error) {
-    activeEmbeddedProxy = null;
-    await proxy.close().catch(() => {});
-    throw error;
-  }
-}
-
-async function resetEmbeddedProxy() {
-  const proxy = activeEmbeddedProxy;
-  activeEmbeddedProxy = null;
-  if (proxy) await proxy.close().catch(() => {});
-}
-
-async function askEmbeddedProxy(prompt, pageState, screenshot, webSearch, imageUpload) {
-  const proxy = await ensureEmbeddedProxy();
-  const params = {
-    model: process.env.GPT_PROXY_MODEL || "chatgpt:chatgpt-web-session",
-    chatgpt_mode: process.env.GPT_PROXY_CHATGPT_MODE || "web",
-    session_id: process.env.GPT_PROXY_SESSION_ID || "screen-agent",
-    prompt: buildPrompt(prompt, pageState, imageUpload, webSearch),
-    web_search: webSearch,
-    stream: false,
-    runtime_dir: runtime,
-    browser: "chromium",
-    image_path: screenshot,
-    headless: envBool("SCREEN_AGENT_IMAGE_HEADLESS", true),
-  };
-  try {
-    let result;
-    try {
-      result = await proxy.call("chatgpt", "chat_image", params);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      process.stderr.write(`[embedded-proxy] image chat failed: ${message}\n`);
-      if (/ChatGPT image response was empty/i.test(message)) throw error;
-      result = await proxy.call("chatgpt", "chat", params);
-    }
-    return { text: result?.text || "Embedded proxy returned an empty answer.", image: Boolean(result?.image) };
-  } catch (error) {
-    // Proxy may be wedged or its browser dead — drop it so the next call respawns clean.
-    await resetEmbeddedProxy();
-    throw error;
-  }
-}
-
-async function embeddedStatus() {
-  await fs.mkdir(runtime, { recursive: true });
-  // Reuse an already-warm proxy without re-init (never relaunch a visible login
-  // browser); otherwise warm and keep one so the following capture reuses it.
-  if (!activeEmbeddedProxy) {
-    activeEmbeddedProxy = startEmbeddedProxy();
-    await activeEmbeddedProxy
-      .call("chatgpt", "init", {
-        runtime_dir: runtime,
-        headless: envBool("SCREEN_AGENT_CHATGPT_HEADLESS", true),
-        browser: "chromium",
-      })
-      .catch(() => {});
-  }
-  return activeEmbeddedProxy.call("chatgpt", "status", {
-    runtime_dir: runtime,
-    browser: "chromium",
-  });
-}
-
-async function embeddedLogin() {
-  await fs.mkdir(runtime, { recursive: true });
-  // Login must own the dedicated profile from a clean browser process. This
-  // also closes any headless embedded proxy left warm by a previous capture.
-  await resetEmbeddedProxy();
-  if (!activeEmbeddedProxy) {
-    activeEmbeddedProxy = startEmbeddedProxy();
-  }
-  try {
-    return await activeEmbeddedProxy.call("chatgpt", "manual_login", { runtime_dir: runtime, browser: "chromium", headless: false });
-  } catch (error) {
-    await activeEmbeddedProxy.close().catch(() => {});
-    activeEmbeddedProxy = null;
-    throw error;
-  }
-}
-
-async function embeddedCloseLogin() {
-  if (!activeEmbeddedProxy) return { ok: true, closed: false };
-  const proxy = activeEmbeddedProxy;
-  activeEmbeddedProxy = null;
-  await proxy.close();
-  return { ok: true, closed: true };
 }
 
 for (const signal of ["SIGTERM", "SIGINT"]) {

@@ -18,50 +18,30 @@
 // Key: passCaptchaOnPage — detects the challenge type and runs the matching keyless solve.
 
 import { getShyMouse } from "./shy-mouse.js";
+import {
+  CHECKBOX_OFFSET,
+  DATADOME_IFRAME,
+  FRIENDLY_WIDGETS,
+  HCAPTCHA_WIDGETS,
+  RECAPTCHA_WIDGETS,
+  TURNSTILE_WIDGETS,
+  cloudflareInterstitial,
+  datadomeSliderPresent,
+  firstVisibleWidget,
+  friendlyPresent,
+  hcaptchaCheckboxPresent,
+  imageChallengeOpen,
+  isInvisibleBadge,
+  normalizeTurnstileAlignment,
+  recaptchaCheckboxPresent,
+  turnstilePending,
+} from "./captcha-detectors.js";
 
 const enabled = () => /^(1|true|yes|on)$/i.test(process.env.HIREMEOPS_AUTO_CAPTCHA || "");
 
 export function captchaSolvingEnabled() {
   return enabled();
 }
-
-// --- Widget selector chains on the MAIN page (we click the widget's position) ---
-// Turnstile: iframe first (proven), then the div-wrapper chain ported from SeleniumBase.
-const TURNSTILE_WIDGETS = [
-  "iframe[src*='challenges.cloudflare.com']",
-  ".cf-turnstile",
-  ".cf-turnstile-wrapper",
-  "#challenge-form div > div",
-  "[data-testid*='challenge-'] div",
-  "div#turnstile-widget div:not([class])",
-  "ngx-turnstile div:not([class])",
-  "[class*=spacer] + div div",
-  ".spacer div:not([class])",
-  "[id*='turnstile'] div:not([class])",
-  "[class*='turnstile'] div:not([class])",
-  "body > div#check > div:not([class])",
-];
-const RECAPTCHA_WIDGETS = ["iframe[src*='recaptcha/api2/anchor']", "iframe[title*='recaptcha' i]"];
-const HCAPTCHA_WIDGETS = [
-  "iframe[src*='hcaptcha.com'][title*='checkbox' i]",
-  "iframe[src*='newassets.hcaptcha.com'][title*='checkbox' i]",
-  "iframe[data-hcaptcha-widget-id]",
-  "iframe[src*='hcaptcha.com']",
-  ".h-captcha",
-];
-const FRIENDLY_WIDGETS = ["iframe[data--frc-frame-id]", ".frc-captcha"];
-const DATADOME_IFRAME =
-  "body > iframe[src*='geo.captcha-delivery.com/captcha/'], body > iframe[src*='geo.captcha-delivery.com/interstitial/']";
-
-// Checkbox offset from the widget top-left, in CSS px (SeleniumBase Linux constants). Small jitter
-// added per click. iframe hits use a slightly larger x (the iframe includes its own padding).
-const CHECKBOX_OFFSET = {
-  turnstile_iframe: { x: 30, y: 30 },
-  turnstile_div: { x: 25, y: 32 },
-  recaptcha: { x: 26, y: 35 },
-  hcaptcha: { x: 30, y: 36 },
-  friendly: { x: 27, y: 34 },
-};
 
 export async function humanize(page) {
   try {
@@ -77,134 +57,6 @@ export async function humanize(page) {
       }
     } catch {}
   }
-}
-
-// --- Detection (page-source / element based, mirrors sb_cdp.py) ---
-async function cloudflareInterstitial(page) {
-  return page
-    .evaluate(() => {
-      const t = (document.title || "").toLowerCase();
-      return (
-        t.includes("just a moment") ||
-        t.includes("um momento") ||
-        t.includes("verificando") ||
-        !!document.querySelector(
-          "#challenge-form, #challenge-running, #cf-chl-widget, script[src*='challenge-platform']",
-        )
-      );
-    })
-    .catch(() => false);
-}
-
-async function turnstilePending(page) {
-  return page
-    .evaluate(() => {
-      const el = document.querySelector('input[name="cf-turnstile-response"]');
-      const widget = document.querySelector(
-        ".cf-turnstile, iframe[src*='challenges.cloudflare.com'], [data-callback='onCaptchaSuccess'], " +
-          // Indeed/managed-challenge shape: the response input mounts with a
-          // `cf-chl-widget-*` id inside #cf-box-container before the iframe loads.
-          "[id^='cf-chl-widget'], #cf-box-container [id^='cf-chl-widget']",
-      );
-      // A mounted response input with no token yet IS a pending Turnstile, even
-      // before the challenges.cloudflare.com iframe has been injected.
-      return (!!widget || !!el) && !(el && el.value);
-    })
-    .catch(() => false);
-}
-
-async function recaptchaCheckboxPresent(page) {
-  return page
-    .evaluate(
-      () =>
-        !!document.querySelector(
-          "iframe[src*='recaptcha/api2/anchor'], iframe[title*='recaptcha' i]",
-        ),
-    )
-    .catch(() => false);
-}
-
-async function hcaptchaCheckboxPresent(page) {
-  return page
-    .evaluate(
-      () =>
-        !!document.querySelector(
-          "iframe[src*='hcaptcha.com'][title*='checkbox' i], iframe[src*='newassets.hcaptcha.com'][title*='checkbox' i], iframe[data-hcaptcha-widget-id], iframe[src*='_Incapsula_Resource?']",
-        ),
-    )
-    .catch(() => false);
-}
-
-async function friendlyPresent(page) {
-  return page
-    .evaluate(() => !!document.querySelector("iframe[data--frc-frame-id], .frc-captcha"))
-    .catch(() => false);
-}
-
-async function datadomeSliderPresent(page) {
-  return page.evaluate((sel) => !!document.querySelector(sel), DATADOME_IFRAME).catch(() => false);
-}
-
-async function imageChallengeOpen(page) {
-  return page
-    .evaluate(() => {
-      const rc = document.querySelector("iframe[src*='recaptcha/api2/bframe']");
-      const hc = document.querySelector("iframe[src*='hcaptcha.com'][title*='challenge' i]");
-      const visible = (el) => el && el.getBoundingClientRect().height > 40;
-      return visible(rc) || visible(hc);
-    })
-    .catch(() => false);
-}
-
-// Left-align a center/right-aligned Turnstile so the checkbox sits at a predictable left position
-// (ported from sb_cdp.py:2687-2768). No-op if the widget is already left-aligned.
-async function normalizeTurnstileAlignment(page) {
-  await page
-    .evaluate(() => {
-      const rw = (attr, from, to) => (attr || "").split(from).join(to);
-      try {
-        for (const el of document.querySelectorAll("form[class], form div[class]")) {
-          const c = el.getAttribute("class") || "";
-          if (c.includes("center") || c.includes("right")) {
-            el.setAttribute("class", rw(rw(c, "center", "left"), "right", "left"));
-          }
-        }
-        for (const el of document.querySelectorAll(
-          "form[style], form div[style], [style*='text-align: center']",
-        )) {
-          const s = el.getAttribute("style") || "";
-          if (s.includes("center") || s.includes("right")) {
-            el.setAttribute("style", rw(rw(s, "center", "left"), "right", "left"));
-          }
-        }
-        for (const el of document.querySelectorAll(
-          "form [id*='turnstile'], form [class*='turnstile']",
-        )) {
-          el.setAttribute("align", "left");
-        }
-      } catch {}
-    })
-    .catch(() => {});
-}
-
-// First visible widget box on the main page, scrolled into view so the click lands on-screen.
-// Returns { box, selector } or null.
-async function firstVisibleWidget(page, selectors) {
-  for (const sel of selectors) {
-    try {
-      const loc = page.locator(sel).filter({ visible: true }).first();
-      if (!(await loc.count())) continue;
-      await loc.scrollIntoViewIfNeeded({ timeout: 2_000 }).catch(() => {});
-      const box = await loc.boundingBox();
-      if (box && box.width >= 10 && box.height >= 10) return { box, selector: sel };
-    } catch {}
-  }
-  return null;
-}
-
-// Skip Google's invisible reCAPTCHA badge (bottom-right corner) — clicking it does nothing.
-function isInvisibleBadge(box, vw, vh) {
-  return box.x > 1040 && box.y > 640 && Math.abs(vw - box.x) < 140 && Math.abs(vh - box.y) < 140;
 }
 
 // Humanized coordinate click on a checkbox at widget-box + offset (with jitter).

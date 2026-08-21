@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use notify_rust::Notification;
+use notify_rust::{Notification, Timeout};
 use std::{env, process::Command as StdCommand, sync::atomic::Ordering};
 use tauri::{Emitter, Manager};
 use uuid::Uuid;
@@ -137,9 +137,24 @@ pub(crate) fn toggle_chat_overlay(app: tauri::AppHandle) {
 async fn notify(summary: &str, body: String) {
     let summary = summary.to_owned();
     let _ = tokio::task::spawn_blocking(move || {
-        Notification::new().summary(&summary).body(&body).show()
+        Notification::new()
+            .summary(&summary)
+            .body(&body)
+            .timeout(notification_timeout())
+            .show()
     })
     .await;
+}
+
+fn notification_timeout() -> Timeout {
+    match env::var("SCREEN_AGENT_NOTIFICATION_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+    {
+        Some(0) => Timeout::Never,
+        Some(milliseconds) => Timeout::Milliseconds(milliseconds),
+        None => Timeout::Milliseconds(30_000),
+    }
 }
 
 fn capture_event_data(run_id: Uuid, output: &serde_json::Value) -> serde_json::Value {

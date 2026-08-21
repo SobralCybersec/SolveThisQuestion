@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   DEFAULT_EMPTY_ANSWER_RETRY_TIMEOUT_MS,
+  DEFAULT_ASSISTANT_ANSWER_POLL_INTERVAL_MS,
   DEFAULT_RESPONSE_POLL_ATTEMPTS,
   DEFAULT_RESPONSE_POLL_INTERVAL_MS,
   composerText,
@@ -75,6 +76,26 @@ test('prompt submission uses enabled button and clears composer quickly', async 
   })
   assert.equal(method, 'button')
   assert.equal(clicks, 1)
+})
+
+test('prompt submission can skip redundant composer-clear confirmation', async () => {
+  let submitted = ''
+  const button = {
+    count: async () => 1,
+    isVisible: async () => true,
+    isDisabled: async () => false,
+    click: async () => {},
+  }
+  const method = await submitChatGPTPrompt({
+    page: { locator: () => ({ last: () => button }) },
+    composer: { inputValue: async () => 'prompt', press: async () => {} },
+    selector: 'button',
+    waitForClearAfterSubmit: false,
+    sleep: async () => { throw new Error('clear confirmation should be skipped') },
+    onSubmitted: value => { submitted = value },
+  })
+  assert.equal(method, 'button')
+  assert.equal(submitted, 'button')
 })
 
 test('prompt submission falls back after button click failure', async () => {
@@ -198,8 +219,9 @@ test('prompt submission reports failure when keyboard leaves composer populated'
 
 test('poll defaults bound empty-response wait', () => {
   assert.equal(DEFAULT_RESPONSE_POLL_ATTEMPTS, 60)
-  assert.equal(DEFAULT_RESPONSE_POLL_INTERVAL_MS, 1_000)
-  assert.ok(DEFAULT_RESPONSE_POLL_ATTEMPTS * DEFAULT_RESPONSE_POLL_INTERVAL_MS >= 60_000)
+  assert.equal(DEFAULT_RESPONSE_POLL_INTERVAL_MS, 50)
+  assert.equal(DEFAULT_ASSISTANT_ANSWER_POLL_INTERVAL_MS, 50)
+  assert.equal(DEFAULT_RESPONSE_POLL_ATTEMPTS * DEFAULT_RESPONSE_POLL_INTERVAL_MS, 3_000)
 })
 
 test('empty assistant answer requests fresh chat after ten seconds', async () => {
@@ -229,18 +251,18 @@ test('assistant answer returns after the second stable non-streaming read', asyn
   assert.equal(clock, 250)
 })
 
-test('assistant answer keeps code on timer stability path', async () => {
+test('assistant answer returns code after stable non-streaming reads', async () => {
   let clock = 0
   const result = await waitForAssistantAnswer({
     read: async () => ({ text: '```answer```', streaming: false }),
     stableMs: 2_500,
-    codeStableMs: 1_000,
+    codeStableMs: 2_000,
     intervalMs: 250,
     now: () => clock,
     sleep: async ms => { clock += ms },
   })
   assert.deepEqual(result, { answer: '```answer```', retry: false })
-  assert.equal(clock, 1_000)
+  assert.equal(clock, 250)
 })
 
 test('assistant answer handles streaming and uses default timing callbacks', async () => {

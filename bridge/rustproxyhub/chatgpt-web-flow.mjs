@@ -4,7 +4,8 @@ const DEFAULT_SEND_CHECK_INTERVAL_MS = 100
 const DEFAULT_BUTTON_POLL_INTERVAL_MS = 150
 const DEFAULT_NON_STREAMING_STABLE_READS = 2
 export const DEFAULT_RESPONSE_POLL_ATTEMPTS = 60
-export const DEFAULT_RESPONSE_POLL_INTERVAL_MS = 1_000
+export const DEFAULT_RESPONSE_POLL_INTERVAL_MS = 50
+export const DEFAULT_ASSISTANT_ANSWER_POLL_INTERVAL_MS = 50
 export const DEFAULT_EMPTY_ANSWER_RETRY_TIMEOUT_MS = 10_000
 
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms))
@@ -14,13 +15,15 @@ export async function composerText(composer) {
 }
 
 async function submitButtonReady(button) {
-  if (!await button.count()) return false
-  if (!await button.isVisible().catch(() => false)) return false
+  const enabled = typeof button.isEnabled === 'function'
+    ? await button.isEnabled().catch(() => false)
+    : !await button.isDisabled().catch(() => true)
+  if (!enabled) return false
   const ariaDisabled = typeof button.getAttribute === 'function'
     ? await button.getAttribute('aria-disabled').catch(() => null)
     : null
   if (ariaDisabled === 'true') return false
-  return !await button.isDisabled().catch(() => true)
+  return true
 }
 
 async function waitForComposerClear(options) {
@@ -36,7 +39,7 @@ async function waitForComposerClear(options) {
 }
 
 async function tryButtonSubmit(options) {
-  const { page, composer, selector, readText, sleep, intervalMs, onSubmitted } = options
+  const { page, composer, selector, readText, sleep, intervalMs, onSubmitted, waitForClearAfterSubmit } = options
   const sendButton = page.locator(selector).last()
   if (!await submitButtonReady(sendButton)) return null
   try {
@@ -46,7 +49,9 @@ async function tryButtonSubmit(options) {
   }
   return {
     attempted: true,
-    submitted: await waitForComposerClear({ composer, readText, sleep, intervalMs, attempts: 20, method: 'button', onSubmitted }),
+    submitted: waitForClearAfterSubmit
+      ? await waitForComposerClear({ composer, readText, sleep, intervalMs, attempts: 20, method: 'button', onSubmitted })
+      : (onSubmitted('button'), 'button'),
   }
 }
 
@@ -65,6 +70,7 @@ export async function submitChatGPTPrompt(options = {}) {
     buttonSubmitTimeoutMs = DEFAULT_BUTTON_SUBMIT_TIMEOUT_MS,
     sendCheckIntervalMs = DEFAULT_SEND_CHECK_INTERVAL_MS,
     buttonPollIntervalMs = DEFAULT_BUTTON_POLL_INTERVAL_MS,
+    waitForClearAfterSubmit = true,
     now = () => Date.now(),
     sleep = delay,
     readText = composerText,
@@ -72,7 +78,7 @@ export async function submitChatGPTPrompt(options = {}) {
   } = options
   const deadline = now() + Math.min(deadlineMs, buttonSubmitTimeoutMs)
   while (now() < deadline) {
-    const buttonAttempt = await tryButtonSubmit({ page, composer, selector, readText, sleep, intervalMs: sendCheckIntervalMs, onSubmitted })
+    const buttonAttempt = await tryButtonSubmit({ page, composer, selector, readText, sleep, intervalMs: sendCheckIntervalMs, onSubmitted, waitForClearAfterSubmit })
     if (buttonAttempt?.submitted) return buttonAttempt.submitted
     if (buttonAttempt?.attempted) break
     await sleep(buttonPollIntervalMs)
@@ -135,9 +141,7 @@ function assistantAnswerReady(state, observation, options) {
   const { stableMs, codeStableMs, nonStreamingStableReads, now } = options
   const { text, lastChange, stableReads } = observation
   if (!text) return false
-  const fastStable = state?.streaming === false
-    && !text.includes('```')
-    && stableReads >= nonStreamingStableReads
+  const fastStable = state?.streaming === false && stableReads >= nonStreamingStableReads
   return fastStable || answerIsStable({
     text,
     streaming: state?.streaming,
@@ -160,7 +164,7 @@ export async function waitForAssistantAnswer(options = {}) {
     stableMs = 1_000,
     codeStableMs = 8_000,
     nonStreamingStableReads = DEFAULT_NON_STREAMING_STABLE_READS,
-    intervalMs = 500,
+    intervalMs = DEFAULT_ASSISTANT_ANSWER_POLL_INTERVAL_MS,
     now = () => Date.now(),
     sleep = delay,
   } = options

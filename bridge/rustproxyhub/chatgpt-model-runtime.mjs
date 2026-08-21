@@ -133,7 +133,7 @@ export async function scanPageModelHintsWithRetries(page, provider, endpointPath
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     ids = await scanPageModelHints(page, provider, endpointPaths)
     if (ids.size > 0) return ids
-    await sleep(1200)
+    await sleep(50)
   }
   return ids
 }

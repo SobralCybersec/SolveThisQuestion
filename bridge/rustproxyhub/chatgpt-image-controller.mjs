@@ -1,9 +1,8 @@
-import { DEFAULT_EMPTY_ANSWER_RETRY_TIMEOUT_MS, submitChatGPTPrompt, waitForAssistantAnswer } from './chatgpt-web-flow.mjs'
-import { bridgeDebug, envBool, gotoChatGPT, isOnHost, sleep } from './browser-runtime.mjs'
+import { DEFAULT_ASSISTANT_ANSWER_POLL_INTERVAL_MS, DEFAULT_EMPTY_ANSWER_RETRY_TIMEOUT_MS, submitChatGPTPrompt, waitForAssistantAnswer } from './chatgpt-web-flow.mjs'
+import { bridgeDebug, envBool, gotoChatGPT, isOnHost } from './browser-runtime.mjs'
 import {
   CHATGPT_INPUT_SELECTOR,
   CHATGPT_SEND_SELECTOR,
-  ensureChatGPTInteractivePage,
   initChatGPT,
   state,
 } from './chatgpt-session-runtime.mjs'
@@ -36,30 +35,18 @@ async function enableWebSearch(page) {
 }
 
 async function prepareImagePage(page, imagePath, webSearch) {
-  const fileInput = page.locator('input[type="file"]').first()
-  if (await fileInput.count() === 0) throw new Error('ChatGPT image upload control not found')
-  await fileInput.setInputFiles(imagePath)
-  await sleep(500)
-  page = await selectChatGPTPage()
+  if (!page || page.isClosed() || !isOnHost(page.url(), 'chatgpt.com', 'openai.com')) page = await selectChatGPTPage()
   await gotoChatGPT(page)
+  const fileInput = page.locator('input[type="file"]').first()
+  await fileInput.waitFor({ state: 'attached', timeout: 2000 })
+  await fileInput.setInputFiles(imagePath)
   if (envBool('SCREEN_AGENT_CHATGPT_THINK', false)) await enableThinkMode(page)
   if (webSearch) await enableWebSearch(page)
   return page
 }
 
-async function readAssistantMessageText(message) {
-  const innerText = await message.innerText().catch(() => '')
-  if (innerText.trim()) return innerText.trim()
-  return String(await message.textContent().catch(() => '')).trim()
-}
-
 async function readAssistantMessageTexts(messages) {
-  const count = await messages.count()
-  const texts = []
-  for (let index = 0; index < count; index += 1) {
-    texts.push(await readAssistantMessageText(messages.nth(index)))
-  }
-  return texts
+  return messages.evaluateAll(nodes => nodes.map(node => String(node.innerText || node.textContent || '').trim())).catch(() => [])
 }
 
 export function selectNewAssistantText(texts, beforeCount, beforeTexts = []) {
@@ -81,44 +68,62 @@ function imagePrompt(prompt, webSearch) {
 
 async function sendImageAndReadAnswer(options) {
   const { page: initialPage, image_path, prompt, web_search } = options
+  const startedAt = Date.now()
+  const mark = phase => bridgeDebug(`chatgpt image timing phase=${phase} elapsed_ms=${Date.now() - startedAt}`)
   let page = await prepareImagePage(initialPage, image_path, web_search)
+  mark('page-ready')
   const assistantMessages = page.locator('[data-message-author-role="assistant"]:visible')
   const beforeTexts = await readAssistantMessageTexts(assistantMessages)
   const beforeCount = beforeTexts.length
   const composer = page.locator(CHATGPT_INPUT_SELECTOR).first()
   await composer.waitFor({ state: 'visible', timeout: 30000 })
+  mark('composer-ready')
   await composer.fill(imagePrompt(prompt, web_search))
+  mark('composer-filled')
   await submitChatGPTPrompt({
     page,
     composer,
     selector: CHATGPT_SEND_SELECTOR,
-    onSubmitted: method => bridgeDebug(`chatgpt prompt submitted via ${method}`),
+    buttonPollIntervalMs: DEFAULT_ASSISTANT_ANSWER_POLL_INTERVAL_MS,
+    waitForClearAfterSubmit: false,
+    onSubmitted: method => {
+      bridgeDebug(`chatgpt prompt submitted via ${method}`)
+      mark('prompt-submitted')
+    },
   })
   const answerTimeout = Number(process.env.SCREEN_AGENT_ANSWER_TIMEOUT_MS || 180000)
   const emptyRetryTimeout = Number(process.env.SCREEN_AGENT_EMPTY_ANSWER_RETRY_TIMEOUT_MS || DEFAULT_EMPTY_ANSWER_RETRY_TIMEOUT_MS)
-  const stableMs = Number(process.env.SCREEN_AGENT_ANSWER_STABLE_MS || 1000)
-  const codeStableMs = Number(process.env.SCREEN_AGENT_ANSWER_CODE_STABLE_MS || 8000)
+  const stableMs = Number(process.env.SCREEN_AGENT_ANSWER_STABLE_MS || 250)
+  const codeStableMs = Number(process.env.SCREEN_AGENT_ANSWER_CODE_STABLE_MS || 1000)
+  const answerPollIntervalMs = Number(process.env.SCREEN_AGENT_ANSWER_POLL_INTERVAL_MS || DEFAULT_ASSISTANT_ANSWER_POLL_INTERVAL_MS)
   const stopButton = page.locator('button[data-testid="stop-button"], button[aria-label="Stop streaming"]')
   const waited = await waitForAssistantAnswer({
     read: async () => {
       const texts = await readAssistantMessageTexts(assistantMessages)
       const text = selectNewAssistantText(texts, beforeCount, beforeTexts)
-      const streaming = await stopButton.count() && await stopButton.first().isVisible().catch(() => false)
-      bridgeDebug(`chatgpt image answer scan messages=${texts.length} baseline=${beforeCount} chars=${text.length} streaming=${Boolean(streaming)}`)
+      const streaming = await stopButton.first().isVisible().catch(() => false)
+      bridgeDebug(`chatgpt image answer scan messages=${texts.length} baseline=${beforeCount} chars=${text.length} streaming=${streaming}`)
       return { text, streaming }
     },
     answerTimeoutMs: answerTimeout,
     emptyRetryTimeoutMs: emptyRetryTimeout,
     stableMs,
     codeStableMs,
+    intervalMs: answerPollIntervalMs,
   })
+  mark('answer-ready')
   return { page, answer: waited.answer, retry: waited.retry }
 }
 
 export async function chatChatGPTWithImage(options) {
   const { runtime_dir, browser, image_path, prompt, web_search = false, headless = true } = options
+  const startedAt = Date.now()
+  const mark = phase => bridgeDebug(`chatgpt image timing phase=${phase} elapsed_ms=${Date.now() - startedAt}`)
   await initChatGPT({ runtime_dir, headless, browser })
-  let page = await ensureChatGPTInteractivePage({ runtime_dir, browser })
+  mark('context-ready')
+  let page = state.chatgpt.page
+  if (!page) throw new Error('ChatGPT Playwright page not initialized')
+  mark('page-selected')
   for (let attempt = 0; attempt < 2; attempt += 1) {
     if (attempt > 0) {
       bridgeDebug('chatgpt image response empty; starting a new chat and retrying image request')

@@ -22,7 +22,7 @@
     "quality:machete": "cargo machete",
     "quality:tools": "npm run quality:clippy && npm run quality:eslint && npm run quality:machete",
     "quality": "npm run quality:tests && npm run test:report && npm run benchmark && node scripts/tests/quality-review.mjs --root . --require-tools --require-evidence --test-report reports/quality/bridge-tests.xml",
-    "quality:full": "npm test && npm run quality:tools && npm run quality",
+    "quality:full": "npm test && node scripts/tests/check-file-size.mjs && npm run quality:tools && npm run quality",
     "quality:install": "pnpm install && python -m venv .quality-venv && .quality-venv/bin/python -m pip install -r requirements-quality.txt && rustup component add clippy && cargo install cargo-machete --locked",
     "benchmark": "node benchmarks/bridge.mjs",
     "bridge:install": "pnpm --dir bridge install",

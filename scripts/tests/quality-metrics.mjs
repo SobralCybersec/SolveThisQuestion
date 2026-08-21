@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
+import { summarizeTrivyReport } from "./quality-security.mjs";
+export { summarizeTrivyReport } from "./quality-security.mjs";
 
 const COVERAGE_FILE_RE = /^(?:lcov\.info|coverage\.xml|jacoco(?:TestReport)?\.xml)$/i;
 const TEST_FILE_RE = /(?:^|[-_.])(?:junit|test-results?|surefire|failsafe)(?:[-_.]|$).*\.xml$/i;
@@ -376,35 +378,4 @@ export function rankHotspots(fileMetrics, churnFiles, { reviewLimit = 500, limit
     .filter((entry) => entry.risk_score > 0)
     .sort((left, right) => right.risk_score - left.risk_score || right.changes - left.changes || left.file.localeCompare(right.file))
     .slice(0, limit);
-}
-
-export function summarizeTrivyReport(report) {
-  const counts = {
-    vulnerabilities: 0,
-    misconfigurations: 0,
-    secrets: 0,
-    high: 0,
-    critical: 0,
-  };
-  for (const result of report?.Results ?? []) {
-    for (const finding of result.Vulnerabilities ?? []) {
-      counts.vulnerabilities += 1;
-      const severity = String(finding.Severity ?? "").toUpperCase();
-      if (severity === "HIGH") counts.high += 1;
-      if (severity === "CRITICAL") counts.critical += 1;
-    }
-    for (const finding of result.Misconfigurations ?? []) {
-      counts.misconfigurations += 1;
-      const severity = String(finding.Severity ?? "").toUpperCase();
-      if (severity === "HIGH") counts.high += 1;
-      if (severity === "CRITICAL") counts.critical += 1;
-    }
-    for (const finding of result.Secrets ?? []) {
-      counts.secrets += 1;
-      const severity = String(finding.Severity ?? "").toUpperCase();
-      if (severity === "HIGH") counts.high += 1;
-      if (severity === "CRITICAL") counts.critical += 1;
-    }
-  }
-  return { ...counts, findings: counts.vulnerabilities + counts.misconfigurations + counts.secrets };
 }

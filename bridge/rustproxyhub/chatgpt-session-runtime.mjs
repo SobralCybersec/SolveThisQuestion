@@ -308,7 +308,7 @@ async function captureChatGPTTemplate(forceNew = false) {
       .then(async () => {
         try {
           await input.fill('a')
-          await sleep(1500)
+          await sleep(100)
           await input.press('Enter')
         } catch (error) {
           clearTimeout(timeout)
