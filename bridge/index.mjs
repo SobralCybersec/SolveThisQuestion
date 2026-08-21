@@ -6,8 +6,9 @@ import process from "node:process";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { uploadImageWithFallback } from "./image-upload.mjs";
+import { passCaptchaIfChallenged } from "./captcha.js";
 
-const { chromium } = await import("./rustproxyhub/browser-runtime.mjs");
+const { applyStealthScripts, baseLaunchOptions, chromium } = await import("./rustproxyhub/browser-runtime.mjs");
 const runtime = process.env.SCREEN_AGENT_RUNTIME || path.resolve(".runtime");
 const captureDir = path.join(runtime, "captures");
 const embeddedBridge = path.join(path.dirname(fileURLToPath(import.meta.url)), "rustproxyhub/index.mjs");
@@ -50,14 +51,25 @@ function resolveCaptureExecutable() {
 }
 
 function captureLaunchOptions() {
-  const args = process.platform === "linux" ? ["--disable-dev-shm-usage"] : [];
-  if (process.platform === "linux" && process.getuid?.() === 0) args.unshift("--no-sandbox");
   const executablePath = resolveCaptureExecutable();
-  return {
-    headless: envBool("SCREEN_AGENT_BROWSER_HEADLESS", true),
-    ...(executablePath ? { executablePath } : {}),
-    ...(args.length ? { args } : {}),
-  };
+  const headless = envBool("SCREEN_AGENT_BROWSER_HEADLESS", true);
+  return baseLaunchOptions({ headless, executablePath, engine: chromium });
+}
+
+async function waitForTargetReady(page) {
+  await page.waitForLoadState("networkidle", { timeout: envMs("SCREEN_AGENT_NETWORK_IDLE_MS", 5000) }).catch(() => {});
+  const deadline = Date.now() + envMs("SCREEN_AGENT_CHALLENGE_WAIT_MS", 30_000);
+  while (Date.now() < deadline) {
+    const challenged = await page.evaluate(() => {
+      const title = (document.title || "").toLowerCase();
+      return title.includes("just a moment")
+        || title.includes("checking your browser")
+        || title.includes("verify you are human")
+        || !!document.querySelector("#challenge-form, #challenge-running, #cf-chl-widget, iframe[src*='challenges.cloudflare.com']");
+    }).catch(() => false);
+    if (!challenged) return;
+    await page.waitForTimeout(1000);
+  }
 }
 
 function envMs(name, fallback) {
@@ -121,8 +133,13 @@ async function analyze(command) {
   const browser = await ensureCaptureBrowser();
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   try {
+    await applyStealthScripts(context);
     const page = await context.newPage();
     const target = await openTargetPage(page, command.url);
+    const captcha = await passCaptchaIfChallenged(page, {
+      settleMs: envMs("SCREEN_AGENT_CAPTCHA_SETTLE_MS", 2500),
+    });
+    await waitForTargetReady(page);
     await page.waitForFunction(() => Array.from(document.images).filter((image) => {
       const rect = image.getBoundingClientRect();
       return rect.bottom > 0 && rect.top < window.innerHeight && rect.width > 20 && rect.height > 20;
@@ -174,7 +191,7 @@ async function analyze(command) {
     }, target.url);
     const imageUpload = await uploadScreenshot(screenshot);
     const result = await askProxy(command.prompt, pageState, screenshot, Boolean(command.web_search), imageUpload);
-    return { ...pageState, screenshot: `/captures/${id}.png`, screenshot_size: screenshotSize, image_upload: imageUpload, answer: result.text, image_analyzed: result.image, web_search: Boolean(command.web_search) };
+    return { ...pageState, captcha, screenshot: `/captures/${id}.png`, screenshot_size: screenshotSize, image_upload: imageUpload, answer: result.text, image_analyzed: result.image, web_search: Boolean(command.web_search) };
   } finally {
     await context.close().catch(() => {});
   }

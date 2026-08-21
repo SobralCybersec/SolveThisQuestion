@@ -15,7 +15,7 @@
     "test": "cargo test && npm run test:bridge && npm run test:frontend",
     "test:bridge": "node --test --test-concurrency=1 bridge/test/*.test.mjs",
     "test:frontend": "pnpm --dir frontend run test",
-    "test:report": "node -e \"require('node:fs').mkdirSync('reports/quality',{recursive:true})\" && node --test --test-concurrency=1 --experimental-test-coverage --test-coverage-include=bridge/rustproxyhub/chatgpt-web-flow.mjs --test-coverage-include=bridge/rustproxyhub/prompt-compaction.mjs --test-coverage-include=bridge/rustproxyhub/chatgpt-web-response.mjs --test-coverage-include=bridge/rustproxyhub/chatgpt-web-session.mjs --test-reporter=junit --test-reporter-destination=reports/quality/bridge-tests.xml --test-reporter=lcov --test-reporter-destination=reports/quality/lcov.info bridge/test/*.test.mjs",
+    "test:report": "node -e \"require('node:fs').mkdirSync('reports/quality',{recursive:true})\" && node --test --test-concurrency=1 --experimental-test-coverage --test-coverage-include=bridge/rustproxyhub/chatgpt-web-flow.mjs --test-coverage-include=bridge/rustproxyhub/chatgpt-web-response.mjs --test-coverage-include=bridge/rustproxyhub/chatgpt-web-session.mjs --test-reporter=junit --test-reporter-destination=reports/quality/bridge-tests.xml --test-reporter=lcov --test-reporter-destination=reports/quality/lcov.info bridge/test/*.test.mjs",
     "quality:tests": "node --test --test-concurrency=1 scripts/tests/*.node-test.mjs",
     "quality:clippy": "cargo clippy --all-targets --all-features -- -D warnings",
     "quality:eslint": "eslint frontend/src bridge/rustproxyhub --max-warnings 0",

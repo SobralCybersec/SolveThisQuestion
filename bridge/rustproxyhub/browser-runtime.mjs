@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process'
 import dns from 'node:dns'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -79,7 +78,7 @@ async function importBrowserPackage(name) {
 
 export function browserBackendFromEnv(env = process.env) {
   const backend = String(env.RUST_PROXY_BROWSER_BACKEND || 'playwright').trim().toLowerCase()
-  if (backend !== 'playwright') {
+  if (backend !== 'playwright' && backend !== 'patchright') {
     throw new Error(`unsupported browser backend: ${backend}`)
   }
   return backend
@@ -98,6 +97,28 @@ async function importBrowserAutomation() {
 
 const playwright = await importBrowserAutomation()
 const { chromium, firefox, webkit } = playwright
+
+export const BASE_STEALTH_ARGS = [
+  '--no-sandbox',
+  '--disable-features=DevToolsDebuggingRestrictions,CalculateNativeWinOcclusion',
+  '--no-first-run',
+  '--no-default-browser-check',
+  '--disable-infobars',
+  '--disable-dev-shm-usage',
+  '--class=HireMeOpsBot',
+  '--disable-background-timer-throttling',
+  '--disable-backgrounding-occluded-windows',
+  '--disable-renderer-backgrounding',
+  '--mute-audio',
+  '--disable-background-networking',
+  '--disable-component-update',
+  '--disable-sync',
+  '--disable-default-apps',
+  '--disable-client-side-phishing-detection',
+]
+
+export const HEADLESS_UA =
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36'
 
 function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true })
@@ -152,102 +173,49 @@ function browserExecutablePath(browser) {
   return firstExisting(BROWSER_PATHS[browser] ?? []) || firstOnPath(BROWSER_PATH_NAMES[browser] ?? [])
 }
 
-// Resolve a Chromium launch config. If the requested channel's real
-// distribution is installed, drive it via `channel` (Playwright applies the
-// right profile flags). Otherwise point `executablePath` at whatever
-// Chromium-family browser IS installed — preferring the requested family, then
-// Edge → Chrome → Chromium. Last resort is Playwright's bundled chromium.
-function resolveChromium(preferredChannel) {
+function preferredChromiumLaunch(preferredChannel) {
   const override = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH
-  if (override && fs.existsSync(override)) {
-    return { engine: chromium, executablePath: override }
-  }
+  if (override && fs.existsSync(override)) return { engine: chromium, executablePath: override }
   if (preferredChannel && firstExisting(BROWSER_PATHS[preferredChannel] ?? [])) {
     return { engine: chromium, channel: preferredChannel }
   }
   if (!preferredChannel && firstExisting(BROWSER_PATHS.chrome)) {
     return { engine: chromium, channel: 'chrome' }
   }
+  return null
+}
+
+function fallbackChromiumLaunch(preferredChannel) {
   const order = preferredChannel
     ? [preferredChannel, 'msedge', 'chrome', 'chromium']
     : ['chrome', 'chromium', 'msedge']
-  for (const key of order) {
-    const executablePath = browserExecutablePath(key)
-    if (executablePath) {
-      return { engine: chromium, executablePath }
-    }
-  }
-  return { engine: chromium }
+  const executablePath = order.map(browserExecutablePath).find(Boolean)
+  return executablePath ? { engine: chromium, executablePath } : { engine: chromium }
 }
 
-function chromiumCommands({ executablePath, channel, engine } = {}) {
-  return [
-    executablePath,
-    channel === 'chrome' ? 'google-chrome' : null,
-    channel === 'msedge' ? 'microsoft-edge' : null,
-    channel === 'chromium' ? 'chromium' : null,
-    'chromium',
-    'google-chrome',
-    'microsoft-edge',
-    typeof engine?.executablePath === 'function' ? engine.executablePath() : null,
-  ].filter(Boolean)
+// Resolve a Chromium launch config. If the requested channel's real
+// distribution is installed, drive it via `channel` (Playwright applies the
+// right profile flags). Otherwise point `executablePath` at whatever
+// Chromium-family browser IS installed — preferring the requested family, then
+// Edge → Chrome → Chromium. Last resort is Playwright's bundled chromium.
+function resolveChromium(preferredChannel) {
+  return preferredChromiumLaunch(preferredChannel) || fallbackChromiumLaunch(preferredChannel)
 }
 
-function chromiumVersionFrom(command) {
-  try {
-    const output = execFileSync(command, ['--version'], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 3000,
-    })
-    const version = output.split(' ').find(value => value[0] >= '0' && value[0] <= '9') || ''
-    return version.split('.')[0]
-  } catch {
-    return ''
+function baseLaunchOptions(options = {}) {
+  const { headless = true, executablePath, channel = 'chrome', engine = chromium, extraArgs = [] } = options
+  const chromiumLaunch = engine === chromium
+  const uaArgs = chromiumLaunch && headless
+    ? [`--user-agent=${HEADLESS_UA}`, '--window-size=1920,1080']
+    : []
+  return {
+    headless,
+    viewport: null,
+    args: [...BASE_STEALTH_ARGS, ...uaArgs, ...extraArgs],
+    ignoreDefaultArgs: ['--enable-automation'],
+    ...(executablePath ? { executablePath } : {}),
+    ...(chromiumLaunch && !executablePath && channel ? { channel } : {}),
   }
-}
-
-function chromiumMajorVersion(options = {}) {
-  const { executablePath, channel, engine } = options
-  const configured = Number(process.env.RUST_PROXY_CHROMIUM_MAJOR)
-  if (Number.isInteger(configured) && configured > 0) return String(configured)
-  for (const command of chromiumCommands({ executablePath, channel, engine })) {
-    const major = chromiumVersionFrom(command)
-    if (major) return major
-  }
-  return ''
-}
-
-function stealthArgs({ headless = false, executablePath, channel, engine } = {}) {
-  const args = [
-    '--no-sandbox',
-    '--disable-blink-features=AutomationControlled',
-    '--disable-features=DevToolsDebuggingRestrictions,CalculateNativeWinOcclusion',
-    '--no-first-run',
-    '--no-default-browser-check',
-    '--disable-infobars',
-    '--disable-dev-shm-usage',
-    '--disable-background-timer-throttling',
-    '--disable-backgrounding-occluded-windows',
-    '--disable-renderer-backgrounding',
-    '--mute-audio',
-    '--disable-background-networking',
-    '--disable-component-update',
-    '--disable-sync',
-    '--disable-default-apps',
-    '--disable-client-side-phishing-detection',
-  ]
-  if (headless && engine === chromium) {
-    const major = chromiumMajorVersion({ executablePath, channel, engine })
-    const configuredUserAgent = String(process.env.RUST_PROXY_HEADLESS_USER_AGENT || '').trim()
-    const userAgent = configuredUserAgent || (major
-      ? `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`
-      : '')
-    if (userAgent) args.push(`--user-agent=${userAgent}`)
-    args.push('--window-size=1920,1080')
-    bridgeDebug(`chatgpt headless launch ua=${userAgent ? userAgent.replace(/Chrome\/\d+/, 'Chrome/*') : 'default'} major=${major || 'unknown'}`)
-  }
-  return args
 }
 
 async function applyStealthScripts(context) {
@@ -274,6 +242,9 @@ function envBool(name, fallback) {
 }
 
 function resolveEngine(browser) {
+  if (browserBackendFromEnv() === 'patchright' && !['chromium', 'chrome', 'msedge', 'edge'].includes(String(browser || 'chromium').toLowerCase())) {
+    throw new Error('patchright backend supports Chromium-family browsers only')
+  }
   switch (browser) {
     case 'firefox':
       return { engine: firefox }
@@ -314,4 +285,4 @@ const DIRECT_MODEL_PATTERNS = {
   chatgpt: /\b(?:gpt|o[0-9]|chatgpt)[a-zA-Z0-9_.:-]{1,80}\b/g,
 }
 
-export { CHATGPT_URL, applyStealthScripts, bridgeDebug, chromium, ensureDir, envBool, firefox, gotoChatGPT, isOnHost, resolveEngine, send, sendEvent, sleep, stealthArgs, webkit }
+export { CHATGPT_URL, applyStealthScripts, baseLaunchOptions, bridgeDebug, chromium, ensureDir, envBool, firefox, gotoChatGPT, isOnHost, resolveEngine, send, sendEvent, sleep, webkit }

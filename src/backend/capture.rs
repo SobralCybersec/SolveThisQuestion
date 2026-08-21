@@ -8,7 +8,8 @@ use xcap::Monitor;
 use super::{
     bridge::agent_request,
     config::{
-        default_screen_prompt, env_bool, parse_code_answer, prompt_with_short_answer, short_answer,
+        default_screen_prompt, env_bool, notification_body, parse_code_answer,
+        prompt_with_short_answer, short_answer,
     },
     state::{AgentEvent, AppState, OverlayPayload},
 };
@@ -216,7 +217,7 @@ pub(crate) async fn publish_success(state: &AppState, run_id: Uuid, output: serd
     if let Some((language, code_text)) = code {
         deliver_code(state, &mode, &language, code_text).await;
     } else {
-        notify("Screen Agent answer", short).await;
+        notify("Screen Agent answer", notification_body(answer)).await;
     }
 }
 

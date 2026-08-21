@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { summarizePromptCompaction } from './prompt-compaction.mjs'
-import { extractChatGPTAssistantModel, extractChatGPTAssistantReasoning, extractChatGPTAssistantText } from './chatgpt-web-response.mjs'
+import { extractChatGPTAssistantModel, extractChatGPTAssistantReasoning, extractChatGPTAssistantText, extractChatGPTConversationText } from './chatgpt-web-response.mjs'
+import { readChatGPTConversationInPage } from './chatgpt-conversation-reader.mjs'
 import { waitForChatGPTResponse } from './chatgpt-web-flow.mjs'
 import { chatGPTSessionFromTemplate, chatGPTSessionKey, latestChatGPTAssistantMessageId } from './chatgpt-web-session.mjs'
 import { CHATGPT_PAGE_REQUEST } from './chatgpt-web-page.mjs'
@@ -15,7 +15,6 @@ import {
   buildChatGPTPayloadFromTemplate,
   captureChatGPTTemplate,
   closeContext,
-  compactChatGPTPrompt,
   ensureLiveChatGPTSession,
   ensureSessionText,
   getChatGPTBasicHeaders,
@@ -82,15 +81,14 @@ async function sendChatGPTConversation(context) {
 
 function normalizeChatGPTPrompt(prompt, web_search) {
   const normalized = prompt.replace(/@WebSearch\b/gi, '@Web search')
-  return web_search && !/@Web search\s*$/i.test(normalized.trim())
-    ? `${normalized.trim()}\n\n@Web search`
-    : normalized
+  if (!web_search || /@Web search\s*$/i.test(normalized.trim())) return normalized
+  return `${normalized.trim()}\n\n@Web search`
 }
 
 async function sendChatGPTWithRetries(context) {
   let { template, session } = context
   const send = preparedPrompt => sendChatGPTConversation({ ...context, template, session, preparedPrompt })
-  let sent = await send(compactChatGPTPrompt(context.prompt, 18000))
+  let sent = await send(context.prompt)
   if (sent.requestResult.status === 401 || sent.requestResult.status === 403) {
     template = await captureChatGPTTemplate(true)
     // Expired auth and stale conversation often arrive together. Refresh
@@ -100,9 +98,9 @@ async function sendChatGPTWithRetries(context) {
       state.chatgpt.webSessions.delete(context.sessionKey)
       persistChatGPTWebSessions()
     }
-    sent = await send(compactChatGPTPrompt(context.prompt, 18000))
+    sent = await send(context.prompt)
   }
-  if (sent.requestResult.status === 413) sent = await send(compactChatGPTPrompt(context.prompt, 9000))
+  if (sent.requestResult.status === 413) sent = await send(context.prompt)
   return { template, session, sent }
 }
 
@@ -117,38 +115,18 @@ function assertChatGPTConversation(sent, conversationId) {
   throw new Error(`ChatGPT upstream request failed with status ${sent.requestResult.status}${suffix}`)
 }
 
-// Forbidden header names: the browser drops them, and sending them at all is a
-// mismatch worth not advertising. Cookies ride along via credentials: 'include'.
-const BROWSER_MANAGED_HEADERS = new Set(['cookie', 'origin', 'referer', 'user-agent', 'accept-encoding', 'connection', 'host'])
-
-// Poll from inside the page. page.context().request leaves over Node's TLS
-// stack, so Cloudflare saw a non-Chrome fingerprint carrying Chrome's cookies
-// on a chatgpt.com backend call - exactly the mismatch it challenges.
-function readChatGPTConversationInPage(page, conversationId, responseHeaders) {
-  const headers = Object.fromEntries(
-    Object.entries(responseHeaders).filter(([name, value]) => value && !BROWSER_MANAGED_HEADERS.has(name.toLowerCase())),
-  )
-  return async () => {
-    const result = await page.evaluate(
-      async ({ url, requestHeaders }) => {
-        const response = await fetch(url, { headers: requestHeaders, credentials: 'include' })
-        return { status: response.status, ok: response.ok, body: await response.text() }
-      },
-      { url: `https://chatgpt.com/backend-api/conversation/${conversationId}`, requestHeaders: headers },
-    )
-    return { status: () => result.status, ok: () => result.ok, text: async () => result.body }
-  }
-}
-
 async function readChatGPTConversation(options) {
-  const { page, conversationId, responseHeaders, previousAssistantMessageId, prompt } = options
+  const { page, conversationId, responseHeaders, previousAssistantMessageId, previousAssistantText, prompt } = options
   return waitForChatGPTResponse({
     read: readChatGPTConversationInPage(page, conversationId, responseHeaders),
     extractText: body => {
       try {
         const payload = JSON.parse(body)
-        if (previousAssistantMessageId && latestChatGPTAssistantMessageId(payload) === previousAssistantMessageId) return ''
-        return extractChatGPTAssistantText(payload, prompt)
+        return extractChatGPTConversationText(payload, {
+          submittedPrompt: prompt,
+          previousAssistantMessageId,
+          previousAssistantText,
+        })
       } catch {
         return ''
       }
@@ -173,8 +151,14 @@ function logConversationShape(payload) {
 function updateChatGPTSession(sessionKey, conversationId, payload, sent) {
   if (!sessionKey) return
   const parentMessageId = latestChatGPTAssistantMessageId(payload) || sent.requestResult.streamMessageId || ''
+  const assistantText = extractChatGPTAssistantText(payload, sent.preparedPrompt.text) || sent.requestResult.streamText || ''
   if (parentMessageId) {
-    state.chatgpt.webSessions.set(sessionKey, { conversation_id: conversationId, parent_message_id: parentMessageId, updated_at: Date.now() })
+    state.chatgpt.webSessions.set(sessionKey, {
+      conversation_id: conversationId,
+      parent_message_id: parentMessageId,
+      assistant_text: assistantText,
+      updated_at: Date.now(),
+    })
   } else if (!sent.requestResult.streamText) {
     state.chatgpt.webSessions.delete(sessionKey)
   }
@@ -191,7 +175,6 @@ function buildChatGPTResult(payload, sent, conversationId) {
     reasoning_content: reasoningContent || null,
     conversation_id: conversationId,
     upstream_cache: sent.requestResult.upstream_cache,
-    warning: summarizePromptCompaction(sent.preparedPrompt),
   }
 }
 
@@ -206,13 +189,27 @@ async function chatChatGPTWebRequest(options) {
   delete responseHeaders.cookie
   let conversation = sent.requestResult.streamText
     ? { body: '', status: 200 }
-    : await readChatGPTConversation({ page, conversationId, responseHeaders, previousAssistantMessageId: sentState.session?.parent_message_id || '', prompt: sent.preparedPrompt.text })
+    : await readChatGPTConversation({
+      page,
+      conversationId,
+      responseHeaders,
+      previousAssistantMessageId: sentState.session?.parent_message_id || '',
+      previousAssistantText: sentState.session?.assistant_text || '',
+      prompt: sent.preparedPrompt.text,
+    })
   bridgeDebug(`chatgpt conversation read status=${conversation.status} bytes=${conversation.body?.length || 0}`)
   if ([401, 403].includes(conversation.status)) {
     const refreshed = await captureChatGPTTemplate(true)
     responseHeaders = { ...refreshed.headers }
     delete responseHeaders.cookie
-    conversation = await readChatGPTConversation({ page, conversationId, responseHeaders, previousAssistantMessageId: sentState.session?.parent_message_id || '', prompt: sent.preparedPrompt.text })
+    conversation = await readChatGPTConversation({
+      page,
+      conversationId,
+      responseHeaders,
+      previousAssistantMessageId: sentState.session?.parent_message_id || '',
+      previousAssistantText: sentState.session?.assistant_text || '',
+      prompt: sent.preparedPrompt.text,
+    })
     bridgeDebug(`chatgpt conversation reread status=${conversation.status} bytes=${conversation.body?.length || 0}`)
   }
   if ([401, 403].includes(conversation.status)) throw new Error(`ChatGPT web conversation read unauthorized (HTTP ${conversation.status})`)

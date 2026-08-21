@@ -5,6 +5,7 @@ import {
   extractChatGPTAssistantModel,
   extractChatGPTAssistantReasoning,
   extractChatGPTAssistantText,
+  extractChatGPTConversationText,
   extractChatGPTAssistantTextFromSse,
 } from '../rustproxyhub/chatgpt-web-response.mjs'
 
@@ -68,6 +69,21 @@ test('extractors cover direct messages, fallback model fields, and nested values
   }) }), 'reason')
   assert.equal(extractChatGPTAssistantReasoning({ mapping: {} }), '')
   assert.equal(extractChatGPTAssistantText(null), '')
+})
+
+test('conversation extractor accepts same assistant node when content changed', () => {
+  const previous = assistant('same-node', 1, ['old answer'])
+  const current = assistant('same-node', 1, ['new answer'])
+  const stale = { mapping: { current: { message: previous } } }
+  const fresh = { mapping: { current: { message: current } } }
+  assert.equal(extractChatGPTConversationText(stale, {
+    previousAssistantMessageId: 'same-node',
+    previousAssistantText: 'old answer',
+  }), '')
+  assert.equal(extractChatGPTConversationText(fresh, {
+    previousAssistantMessageId: 'same-node',
+    previousAssistantText: 'old answer',
+  }), 'new answer')
 })
 
 test('SSE extractor returns final answer after completion marker', () => {

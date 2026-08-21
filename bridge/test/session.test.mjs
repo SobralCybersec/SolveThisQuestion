@@ -38,7 +38,7 @@ test('latest assistant message id is time ordered', () => {
 test('sessions round-trip and apply parent message id', () => {
   const runtimeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'screen-agent-session-'))
   try {
-    const sessions = new Map([['work', { conversation_id: 'c', parent_message_id: 'p' }]])
+    const sessions = new Map([['work', { conversation_id: 'c', parent_message_id: 'p', assistant_text: 'answer' }]])
     saveChatGPTWebSessions(runtimeDir, sessions)
     assert.deepEqual([...loadChatGPTWebSessions(runtimeDir)], [...sessions])
     assert.deepEqual(

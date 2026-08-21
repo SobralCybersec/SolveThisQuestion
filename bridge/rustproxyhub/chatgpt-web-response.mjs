@@ -1,3 +1,5 @@
+import { latestChatGPTAssistantMessageId } from './chatgpt-web-session.mjs'
+
 const TEXT_FIELDS = new Set(['content', 'output_text', 'parts', 'text'])
 const REASONING_FIELDS = new Set(['reasoning', 'reasoning_content', 'summary', 'thoughts'])
 
@@ -79,6 +81,23 @@ export function extractChatGPTAssistantText(payload, submittedPrompt = '') {
   }
 
   return ''
+}
+
+export function extractChatGPTConversationText(payload, options = {}) {
+  const {
+    submittedPrompt = '',
+    previousAssistantMessageId = '',
+    previousAssistantText = '',
+  } = options
+  const text = extractChatGPTAssistantText(payload, submittedPrompt)
+  if (!text) return ''
+  if (
+    previousAssistantMessageId
+    && previousAssistantText
+    && latestChatGPTAssistantMessageId(payload) === previousAssistantMessageId
+    && text === previousAssistantText
+  ) return ''
+  return text
 }
 
 export function extractChatGPTAssistantModel(payload) {

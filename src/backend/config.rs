@@ -41,7 +41,35 @@ pub(crate) fn default_screen_prompt() -> String {
     "Read the uploaded desktop screenshot and find every question, problem, or exercise in it. Solve each one and actually work it out: read the given values, do the calculations or reasoning step by step, and reach a correct result — never guess or leave a question unanswered. Preserve the visible numbering (Q.1, Q.2, and Q.1.a) for subparts). Use only text that is actually readable in the image; do not invent missing text, and if part of a problem is unreadable, say so for that item. Do not describe the browser, the page layout, or the screenshot itself — spend the output on solving. If the screenshot is a coding or programming task (code editor, function stub, algorithm prompt, LeetCode problem, failing test, or similar), first identify the programming language actually shown on screen — infer it from the visible syntax, the file name or extension, the editor, or the problem statement — then write the COMPLETE solution in that exact same language: the full code, ready to paste in and run. Do not abbreviate, summarize, omit imports or boilerplate, or leave placeholders, TODOs, or '...' — output the whole program or function. For a coding task the delivered answer must be the code itself, so keep any explanation to at most one short line, then end with the single line 'Short Answer:' and, on the very next line, 'LANG: ' followed by the detected language name (for example 'LANG: C++'), and on the line after that the entire finished code in that language, written as raw code with no markdown code fences or backticks and nothing after it. If no question is present, give one concise, useful answer about the visible content. Otherwise end with exactly one final line: Short Answer: the concise result for each item (for example Q.1) 42, Q.2) yes). Do not repeat the label or wrap the answer in quotation marks.".to_owned()
 }
 
+fn strip_invisible_formatting(answer: &str) -> String {
+    answer
+        .chars()
+        .filter(|character| {
+            !matches!(
+                character,
+                '\u{00AD}'
+                    | '\u{200B}'
+                    | '\u{200C}'
+                    | '\u{200D}'
+                    | '\u{2060}'
+                    | '\u{2063}'
+                    | '\u{FEFF}'
+            )
+        })
+        .collect()
+}
+
+pub(crate) fn notification_body(answer: &str) -> String {
+    let short = short_answer(answer);
+    let body = strip_invisible_formatting(&short)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("Short Answer: {body}")
+}
+
 pub(crate) fn short_answer(answer: &str) -> String {
+    let answer = strip_invisible_formatting(answer);
     let marker = answer
         .to_ascii_lowercase()
         .rfind("short answer:")

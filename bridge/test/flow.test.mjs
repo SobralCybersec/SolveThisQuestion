@@ -77,6 +77,49 @@ test('prompt submission uses enabled button and clears composer quickly', async 
   assert.equal(clicks, 1)
 })
 
+test('prompt submission falls back after button click failure', async () => {
+  let value = 'prompt'
+  const button = {
+    count: async () => 1,
+    isVisible: async () => true,
+    isDisabled: async () => false,
+    click: async () => { throw new Error('detached') },
+  }
+  const method = await submitChatGPTPrompt({
+    page: { locator: () => ({ last: () => button }) },
+    composer: {
+      inputValue: async () => value,
+      press: async () => { value = '' },
+    },
+    selector: 'button',
+    sleep: async () => {},
+  })
+  assert.equal(method, 'keyboard')
+})
+
+test('prompt submission tolerates detached button state reads', async () => {
+  let value = 'prompt'
+  let clock = 0
+  const button = {
+    count: async () => 1,
+    isVisible: async () => true,
+    getAttribute: async () => { throw new Error('detached') },
+    isDisabled: async () => { throw new Error('detached') },
+  }
+  const method = await submitChatGPTPrompt({
+    page: { locator: () => ({ last: () => button }) },
+    composer: {
+      inputValue: async () => value,
+      press: async () => { value = '' },
+    },
+    selector: 'button',
+    deadlineMs: 1,
+    now: () => clock,
+    sleep: async ms => { clock += ms },
+  })
+  assert.equal(method, 'keyboard')
+})
+
 test('prompt submission honors aria-disabled and falls back to Enter', async () => {
   let value = 'prompt'
   let clock = 0
@@ -154,9 +197,9 @@ test('prompt submission reports failure when keyboard leaves composer populated'
 })
 
 test('poll defaults bound empty-response wait', () => {
-  assert.equal(DEFAULT_RESPONSE_POLL_ATTEMPTS, 40)
-  assert.equal(DEFAULT_RESPONSE_POLL_INTERVAL_MS, 250)
-  assert.ok(DEFAULT_RESPONSE_POLL_ATTEMPTS * DEFAULT_RESPONSE_POLL_INTERVAL_MS <= 10_000)
+  assert.equal(DEFAULT_RESPONSE_POLL_ATTEMPTS, 60)
+  assert.equal(DEFAULT_RESPONSE_POLL_INTERVAL_MS, 1_000)
+  assert.ok(DEFAULT_RESPONSE_POLL_ATTEMPTS * DEFAULT_RESPONSE_POLL_INTERVAL_MS >= 60_000)
 })
 
 test('empty assistant answer requests fresh chat after ten seconds', async () => {
@@ -172,17 +215,31 @@ test('empty assistant answer requests fresh chat after ten seconds', async () =>
   assert.equal(clock, DEFAULT_EMPTY_ANSWER_RETRY_TIMEOUT_MS)
 })
 
-test('assistant answer waits for stable non-streaming text', async () => {
+test('assistant answer returns after the second stable non-streaming read', async () => {
   let clock = 0
   const result = await waitForAssistantAnswer({
     read: async () => ({ text: 'answer', streaming: false }),
       emptyRetryTimeoutMs: 10_000,
-      stableMs: 1_000,
+      stableMs: 2_500,
       intervalMs: 250,
       now: () => clock,
       sleep: async ms => { clock += ms },
   })
   assert.deepEqual(result, { answer: 'answer', retry: false })
+  assert.equal(clock, 250)
+})
+
+test('assistant answer keeps code on timer stability path', async () => {
+  let clock = 0
+  const result = await waitForAssistantAnswer({
+    read: async () => ({ text: '```answer```', streaming: false }),
+    stableMs: 2_500,
+    codeStableMs: 1_000,
+    intervalMs: 250,
+    now: () => clock,
+    sleep: async ms => { clock += ms },
+  })
+  assert.deepEqual(result, { answer: '```answer```', retry: false })
   assert.equal(clock, 1_000)
 })
 

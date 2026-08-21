@@ -2,8 +2,9 @@ const DEFAULT_PROMPT_DEADLINE_MS = 60_000
 const DEFAULT_BUTTON_SUBMIT_TIMEOUT_MS = 5_000
 const DEFAULT_SEND_CHECK_INTERVAL_MS = 100
 const DEFAULT_BUTTON_POLL_INTERVAL_MS = 150
-export const DEFAULT_RESPONSE_POLL_ATTEMPTS = 40
-export const DEFAULT_RESPONSE_POLL_INTERVAL_MS = 250
+const DEFAULT_NON_STREAMING_STABLE_READS = 2
+export const DEFAULT_RESPONSE_POLL_ATTEMPTS = 60
+export const DEFAULT_RESPONSE_POLL_INTERVAL_MS = 1_000
 export const DEFAULT_EMPTY_ANSWER_RETRY_TIMEOUT_MS = 10_000
 
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms))
@@ -118,13 +119,47 @@ function answerIsStable(options) {
   return now() - lastChange >= stableWindow
 }
 
+function observeAssistantAnswer(state, previous, now) {
+  const text = String(state?.text || '').trim()
+  if (text !== previous.text) {
+    return { text, lastChange: now(), stableReads: text ? 1 : 0 }
+  }
+  return {
+    text,
+    lastChange: previous.lastChange,
+    stableReads: text && state?.streaming === false ? previous.stableReads + 1 : previous.stableReads,
+  }
+}
+
+function assistantAnswerReady(state, observation, options) {
+  const { stableMs, codeStableMs, nonStreamingStableReads, now } = options
+  const { text, lastChange, stableReads } = observation
+  if (!text) return false
+  const fastStable = state?.streaming === false
+    && !text.includes('```')
+    && stableReads >= nonStreamingStableReads
+  return fastStable || answerIsStable({
+    text,
+    streaming: state?.streaming,
+    lastChange,
+    now,
+    stableMs,
+    codeStableMs,
+  })
+}
+
+function emptyAnswerTimedOut(text, startedAt, now, timeoutMs) {
+  return !text && now() - startedAt >= timeoutMs
+}
+
 export async function waitForAssistantAnswer(options = {}) {
   const {
     read,
     answerTimeoutMs = 180_000,
     emptyRetryTimeoutMs = DEFAULT_EMPTY_ANSWER_RETRY_TIMEOUT_MS,
-    stableMs = 2_500,
+    stableMs = 1_000,
     codeStableMs = 8_000,
+    nonStreamingStableReads = DEFAULT_NON_STREAMING_STABLE_READS,
     intervalMs = 500,
     now = () => Date.now(),
     sleep = delay,
@@ -132,24 +167,20 @@ export async function waitForAssistantAnswer(options = {}) {
   const startedAt = now()
   const deadline = startedAt + answerTimeoutMs
   let answer = ''
-  let lastText = ''
-  let lastChange = startedAt
+  let observation = { text: '', lastChange: startedAt, stableReads: 0 }
 
   while (now() < deadline) {
     const state = await read().catch(() => ({ text: '', streaming: false }))
-    const text = String(state?.text || '').trim()
-    if (text !== lastText) {
-      lastText = text
-      lastChange = now()
-    } else if (answerIsStable({ text, streaming: state?.streaming, lastChange, now, stableMs, codeStableMs })) {
-      answer = text
+    observation = observeAssistantAnswer(state, observation, now)
+    if (assistantAnswerReady(state, observation, { stableMs, codeStableMs, nonStreamingStableReads, now })) {
+      answer = observation.text
       break
     }
-    if (!lastText && now() - startedAt >= emptyRetryTimeoutMs) {
+    if (emptyAnswerTimedOut(observation.text, startedAt, now, emptyRetryTimeoutMs)) {
       return { answer: '', retry: true }
     }
     await sleep(intervalMs)
   }
 
-  return { answer: answer || lastText, retry: !answer && !lastText }
+  return { answer: answer || observation.text, retry: !answer && !observation.text }
 }

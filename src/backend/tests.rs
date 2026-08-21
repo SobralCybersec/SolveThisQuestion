@@ -33,8 +33,35 @@ fn short_answer_instruction_and_parser_work() {
         short_answer("Short Answer: \"Short Answer: Q.1) 42\""),
         "Q.1) 42"
     );
+    assert_eq!(
+        short_answer("Explanation\nShort Answer: Q.1) \u{200b}42"),
+        "Q.1) 42"
+    );
     assert!(default_screen_prompt().contains("Short Answer:"));
     assert!(default_screen_prompt().contains("Do not describe the browser"));
+}
+
+#[test]
+fn notification_body_normalizes_layout_marks_without_truncating_long_answers() {
+    let tail = "tail-marker ".repeat(1024);
+    let answer =
+        format!("Short Answer: Q.1) \u{200b}\n−2\n7\n8, Q.2) enunciado/matrizes ilegíveis. {tail}");
+    let body = notification_body(&answer);
+
+    assert!(!body.contains('\u{200b}'));
+    assert!(!body.contains('\n'));
+    assert!(body.starts_with("Short Answer: Q.1) −2 7 8, Q.2) enunciado/matrizes ilegíveis."));
+    assert!(body.ends_with("tail-marker"));
+    assert!(body.len() > 10_000);
+}
+
+#[test]
+fn notification_body_puts_short_answer_before_long_explanation() {
+    let answer = "Detailed explanation\nShort Answer: Q.1) Sim, 60 kg em aproximadamente 26,32 dias. Q.2) 7.000 peças por mês.";
+    assert_eq!(
+        notification_body(answer),
+        "Short Answer: Q.1) Sim, 60 kg em aproximadamente 26,32 dias. Q.2) 7.000 peças por mês."
+    );
 }
 
 #[test]

@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto'
-import { compactStructuredPrompt } from './prompt-compaction.mjs'
 import { applyChatGPTConversationSession } from './chatgpt-web-session.mjs'
 
 // chatgpt.com's web conversation endpoint silently drops client-supplied
@@ -57,10 +56,6 @@ export function replaceChatGPTMessageContent(content, prompt) {
   if (!content || typeof content !== 'object') return { content_type: 'text', parts: [prompt] }
   if (Array.isArray(content.parts)) return { ...content, parts: [prompt] }
   return { ...content, text: prompt }
-}
-
-export function compactChatGPTPrompt(prompt, maxChars = 18000) {
-  return compactStructuredPrompt(prompt, { maxChars })
 }
 
 export function parseJson(value) {

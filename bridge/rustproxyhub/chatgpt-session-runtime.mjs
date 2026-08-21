@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { chatGPTSessionFromTemplate, chatGPTSessionKey, latestChatGPTAssistantMessageId, loadChatGPTWebSessions, saveChatGPTWebSessions } from './chatgpt-web-session.mjs'
 import { assertSafeAccountId, closeChromiumProfileInstances, isProfileSingletonError, removeStaleChromiumProfileLock } from './chromium-profile.mjs'
-import { applyStealthScripts, bridgeDebug, chromium, ensureDir, envBool, gotoChatGPT, isOnHost, resolveEngine, sleep, stealthArgs } from './browser-runtime.mjs'
+import { applyStealthScripts, baseLaunchOptions, bridgeDebug, chromium, ensureDir, envBool, gotoChatGPT, isOnHost, resolveEngine, sleep } from './browser-runtime.mjs'
 import {
   CHATGPT_WEB_MODEL_ENDPOINTS,
   addKnownChatGPTModels,
@@ -16,7 +16,6 @@ import {
 import {
   buildChatGPTPayloadFromTemplate,
   cloneJson,
-  compactChatGPTPrompt,
   finalizeChatGPTPayload,
   foldChatGPTSystemPrompt,
   parseChatGPTTemplate,
@@ -97,13 +96,13 @@ async function launchChatGPTContext(profileDir, selectedHeadless, browser) {
   try { storageState = JSON.parse(fs.readFileSync(chatGPTStorageStatePath(), 'utf8')) } catch {}
   const { engine, channel, executablePath } = resolveEngine(browser)
   const launchOptions = {
-    headless: selectedHeadless,
-    channel,
-    executablePath,
+    ...baseLaunchOptions({
+      headless: selectedHeadless,
+      executablePath,
+      channel,
+      engine,
+    }),
     storageState,
-    viewport: null,
-    ignoreDefaultArgs: ['--enable-automation'],
-    args: stealthArgs({ headless: selectedHeadless, executablePath, channel, engine }),
   }
   try {
     state.chatgpt.context = await engine.launchPersistentContext(profileDir, launchOptions)
@@ -357,7 +356,6 @@ export {
   chatGPTStorageStatePath,
   cloneJson,
   closeContext,
-  compactChatGPTPrompt,
   ensureChatGPTInteractivePage,
   ensureLiveChatGPTSession,
   ensureSessionText,

@@ -34,3 +34,31 @@ test('bridge API returns correlated structured error for unsupported calls', asy
   child.kill('SIGTERM')
   await once(child, 'exit').catch(() => {})
 })
+
+test('bridge drains queued response before stdin close', async () => {
+  const bridgeDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+  const child = spawn(process.execPath, [path.join(bridgeDir, 'rustproxyhub/index.mjs')], {
+    cwd: bridgeDir,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  })
+  const output = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('bridge EOF response timeout')), 10000)
+    let buffer = ''
+    child.stdout.on('data', chunk => {
+      buffer += chunk
+      const line = buffer.split('\n').find(Boolean)
+      if (!line) return
+      clearTimeout(timer)
+      resolve(JSON.parse(line))
+    })
+    child.once('error', reject)
+  })
+  child.stdin.end(`${JSON.stringify({ id: 'eof-test', provider: 'unknown', method: 'status' })}\n`)
+  const result = await output
+  assert.deepEqual(result, {
+    id: 'eof-test',
+    result: null,
+    error: 'Unsupported helper call: unknown:status',
+  })
+  await once(child, 'exit')
+})

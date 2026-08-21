@@ -96,7 +96,7 @@ async function sendImageAndReadAnswer(options) {
   })
   const answerTimeout = Number(process.env.SCREEN_AGENT_ANSWER_TIMEOUT_MS || 180000)
   const emptyRetryTimeout = Number(process.env.SCREEN_AGENT_EMPTY_ANSWER_RETRY_TIMEOUT_MS || DEFAULT_EMPTY_ANSWER_RETRY_TIMEOUT_MS)
-  const stableMs = Number(process.env.SCREEN_AGENT_ANSWER_STABLE_MS || 2500)
+  const stableMs = Number(process.env.SCREEN_AGENT_ANSWER_STABLE_MS || 1000)
   const codeStableMs = Number(process.env.SCREEN_AGENT_ANSWER_CODE_STABLE_MS || 8000)
   const stopButton = page.locator('button[data-testid="stop-button"], button[aria-label="Stop streaming"]')
   const waited = await waitForAssistantAnswer({

@@ -3,7 +3,6 @@ import { performance } from 'node:perf_hooks'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { waitForAssistantAnswer } from '../bridge/rustproxyhub/chatgpt-web-flow.mjs'
-import { compactStructuredPrompt } from '../bridge/rustproxyhub/prompt-compaction.mjs'
 import { extractChatGPTAssistantText } from '../bridge/rustproxyhub/chatgpt-web-response.mjs'
 
 const iterations = Math.max(1, Number(process.env.BENCHMARK_ITERATIONS || 5000))
@@ -26,8 +25,6 @@ const payload = {
     },
   ])),
 }
-const prompt = Array.from({ length: 16 }, (_, index) => `User: question ${index}\n\nAssistant: answer ${index}`).join('\n\n')
-
 function run(name, fn) {
   const start = performance.now()
   for (let index = 0; index < iterations; index += 1) fn()
@@ -38,7 +35,6 @@ function run(name, fn) {
 }
 
 run('response extraction', () => extractChatGPTAssistantText(payload))
-run('prompt compaction', () => compactStructuredPrompt(prompt, { maxChars: 1200 }))
 
 const runAsync = async (name, fn) => {
   const start = performance.now()
