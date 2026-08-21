@@ -87,6 +87,16 @@ describe("chat requests", () => {
       }),
     );
   });
+
+  it("rejects successful responses without a message id", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) }));
+
+    await expect(queueChat("Hello", [])).resolves.toEqual({
+      ok: false,
+      messageId: undefined,
+      error: "Chat response did not include a message ID",
+    });
+  });
 });
 
 describe("settings controls", () => {

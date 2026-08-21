@@ -70,3 +70,23 @@ test("uses Postimages API endpoint and parses direct XML URL", async () => {
   assert.match(requestBody, /image=cG5n/);
   await fs.rm(path.dirname(file), { recursive: true, force: true });
 });
+
+test("resolves Postimages page XML to i.postimg.cc direct URL", async () => {
+  const file = path.join(await fs.mkdtemp(path.join(os.tmpdir(), "screen-agent-upload-")), "capture.png");
+  await fs.writeFile(file, Buffer.from("png"));
+  const calls = [];
+  const result = await uploadImageWithFallback(file, {
+    SCREEN_AGENT_IMAGE_UPLOAD_PROVIDERS: "postimages",
+    SCREEN_AGENT_POSTIMAGES_URL: "https://api.postimage.test/1/upload",
+    SCREEN_AGENT_POSTIMAGES_API_KEY: "post-key",
+  }, async (url) => {
+    calls.push(url);
+    if (url.includes("/1/upload")) {
+      return new Response("<data success=\"1\"><page>https://postimg.cc/abc123</page></data>", { status: 200 });
+    }
+    return new Response('<meta property="og:image" content="https://i.postimg.cc/xdSb0CW7/capture.png">', { status: 200 });
+  });
+  assert.equal(result.url, "https://i.postimg.cc/xdSb0CW7/capture.png");
+  assert.deepEqual(calls, ["https://api.postimage.test/1/upload", "https://postimg.cc/abc123"]);
+  await fs.rm(path.dirname(file), { recursive: true, force: true });
+});

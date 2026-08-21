@@ -30,7 +30,7 @@ importers:
   bridge:
     dependencies:
       playwright:
-        specifier: ^1.60.0
+        specifier: ^1.62.1
         version: 1.62.1
 
   frontend:

@@ -1,5 +1,5 @@
 import { DEFAULT_EMPTY_ANSWER_RETRY_TIMEOUT_MS, submitChatGPTPrompt, waitForAssistantAnswer } from './chatgpt-web-flow.mjs'
-import { bridgeDebug, envBool, isOnHost, sleep } from './browser-runtime.mjs'
+import { bridgeDebug, envBool, gotoChatGPT, isOnHost, sleep } from './browser-runtime.mjs'
 import {
   CHATGPT_INPUT_SELECTOR,
   CHATGPT_SEND_SELECTOR,
@@ -17,7 +17,7 @@ async function enableThinkMode(page) {
 }
 
 async function startNewChat(page) {
-  await page.goto('https://chatgpt.com/', { waitUntil: 'domcontentloaded' })
+  await gotoChatGPT(page, { force: true })
   await page.locator(CHATGPT_INPUT_SELECTOR).first().waitFor({ state: 'visible', timeout: 30000 })
   return page
 }
@@ -41,7 +41,7 @@ async function prepareImagePage(page, imagePath, webSearch) {
   await fileInput.setInputFiles(imagePath)
   await sleep(500)
   page = await selectChatGPTPage()
-  if (!isOnHost(page.url(), 'chatgpt.com')) await page.goto('https://chatgpt.com/', { waitUntil: 'domcontentloaded' })
+  await gotoChatGPT(page)
   if (envBool('SCREEN_AGENT_CHATGPT_THINK', false)) await enableThinkMode(page)
   if (webSearch) await enableWebSearch(page)
   return page

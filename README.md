@@ -175,7 +175,7 @@ The repository also tracks engineering metrics separately: file size, duplicatio
 * **Backend**: Rust · `tokio` · `axum` 0.8 · `tower-http` · `serde` · `anyhow` · `tracing`.
 * **Capture**: `xcap` on desktop platforms; `libwayshot-xcap` and `image` on Linux Wayland.
 * **Frontend**: React 19 · TypeScript 5.7 · Vite 8 · Vitest.
-* **Browser bridge**: Node ESM + Playwright 1.60, with ChatGPT session modules under `bridge/rustproxyhub/`.
+* **Browser bridge**: Node ESM + Playwright 1.62, with ChatGPT session modules under `bridge/rustproxyhub/`.
 * **OS delivery**: `notify-rust`, Tauri Overlay window, `wtype` or `ydotool` on Linux.
 * **CI/CD**: GitHub Actions for frontend, bridge, Rust, Docker, quality, and release workflows.
 * **Packaging**: Tauri resources bundle the `bridge/` directory and icons for NSIS, MSI, AppImage, and Debian targets.
@@ -198,7 +198,7 @@ pnpm bridge:install
 
 - **Rust** stable + Cargo
 - **Node.js** and **pnpm**; CI pins Node 24 and pnpm 10.15.0
-- A Chromium-family browser available to Playwright or configured through `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH`
+- A Chromium-family browser, Google Chrome preferred, available to Playwright or configured through `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH`
 - Tauri/WebView system dependencies on Linux
 - A logged-in ChatGPT browser session when using the embedded proxy
 - An external OpenAI-compatible proxy URL when using external mode

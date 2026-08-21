@@ -84,6 +84,14 @@ function imageBlob(bytes) {
   return new Blob([bytes], { type: "image/png" });
 }
 
+function cleanUrl(value) {
+  return String(value || "").replace(/&amp;/gi, "&").trim();
+}
+
+function isPostimagesDirectUrl(value) {
+  return /^https?:\/\/i\.postimg\.cc\//i.test(value);
+}
+
 async function uploadCatbox(bytes, filename, env, fetchFn) {
   const form = new FormData();
   form.append("reqtype", "fileupload");
@@ -141,18 +149,35 @@ async function uploadPostimages(bytes, filename, token, env, fetchFn) {
     const status = Number(body.text.match(/status=["'](\d+)["']/i)?.[1] || response.status);
     throw new UploadError("postimages", status, apiError[1].trim());
   }
-  const directUrl = body.json.url || body.json.image?.url || body.json.data?.url
-    || body.text.match(/<url>(https?:\/\/[^<]+)<\/url>/i)?.[1];
-  if (!directUrl) throw new UploadError("postimages", response.status, "missing direct URL");
-  if (/^https:\/\/i\.postimg\.cc\//i.test(directUrl)) {
+  const jsonUrls = [
+    body.json.direct_url,
+    body.json.directUrl,
+    body.json.url,
+    body.json.page,
+    body.json.page_url,
+    body.json.pageUrl,
+    body.json.image?.direct_url,
+    body.json.image?.url,
+    body.json.data?.direct_url,
+    body.json.data?.url,
+    body.json.data?.page,
+  ].map(cleanUrl).filter(Boolean);
+  const xmlUrls = ["direct_url", "url", "page"].map(tag => body.text.match(
+    new RegExp(`<${tag}>(https?:\\/\\/[^<]+)<\\/${tag}>`, "i"),
+  )?.[1]).map(cleanUrl).filter(Boolean);
+  const directUrl = [...jsonUrls, ...xmlUrls].find(isPostimagesDirectUrl);
+  if (directUrl) {
     return { url: directUrl, viewer: null, size: bytes.byteLength };
   }
-  const page = await request(fetchFn, directUrl, { method: "GET" });
+  const pageUrl = [...jsonUrls, ...xmlUrls].find(url => !isPostimagesDirectUrl(url));
+  if (!pageUrl) throw new UploadError("postimages", response.status, "missing direct URL");
+  const page = await request(fetchFn, pageUrl, { method: "GET" });
   const pageBody = await responseBody(page);
   assertOk("postimages", page, pageBody);
-  const match = pageBody.text.match(/<meta property=["']og:image["'] content=["']([^"']+)["']/i);
-  if (!match?.[1]) throw new UploadError("postimages", page.status, "missing direct URL");
-  return { url: match[1], viewer: directUrl, size: bytes.byteLength };
+  const match = pageBody.text.match(/https?:\/\/i\.postimg\.cc\/[^"'\s<]+/i);
+  const pageDirectUrl = cleanUrl(match?.[0]);
+  if (!isPostimagesDirectUrl(pageDirectUrl)) throw new UploadError("postimages", page.status, "missing direct URL");
+  return { url: pageDirectUrl, viewer: pageUrl, size: bytes.byteLength };
 }
 
 async function uploadImgBb(bytes, filename, token, env, fetchFn) {

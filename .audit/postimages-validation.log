@@ -1,0 +1,100 @@
+$ node --test --test-concurrency=1 bridge/test/image-upload.test.mjs
+✔ provider order is deduplicated and configurable (1.115912ms)
+[image-upload] catbox upload returned 429: rate limited; trying next provider
+✔ 429 from one host falls through to next host (20.67543ms)
+✔ uses current ImgPile binary upload API and data.urls.original (2.011757ms)
+✔ uses Postimages API endpoint and parses direct XML URL (1.84672ms)
+✔ resolves Postimages page XML to i.postimg.cc direct URL (1.762313ms)
+ℹ tests 5
+ℹ suites 0
+ℹ pass 5
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 78.699524
+exit_code=0
+$ npm run test:bridge
+
+> screen-agent@0.1.0 test:bridge
+> node --test --test-concurrency=1 bridge/test/*.test.mjs
+
+✔ waitForChatGPTResponse retries empty bodies and returns first answer (1.493324ms)
+✔ waitForChatGPTResponse stops unauthorized polling immediately (0.680965ms)
+✔ waitForChatGPTResponse keeps polling when extractor rejects stale content (0.213497ms)
+✔ prompt submission uses enabled button and clears composer quickly (0.465975ms)
+✔ prompt submission honors aria-disabled and falls back to Enter (0.362894ms)
+✔ prompt submission falls back to Enter after button deadline (0.207335ms)
+✔ prompt submission polls uncleared button then uses keyboard (0.603641ms)
+✔ prompt submission reports failure when keyboard leaves composer populated (0.568085ms)
+✔ poll defaults bound empty-response wait (0.163874ms)
+✔ empty assistant answer requests fresh chat after ten seconds (0.410512ms)
+✔ assistant answer waits for stable non-streaming text (0.206574ms)
+✔ assistant answer handles streaming and uses default timing callbacks (4.89961ms)
+✔ response polling supports default extractor (0.177379ms)
+✔ composer text falls back to inner text when input value fails (0.203188ms)
+✔ image answer accepts assistant node reused as response placeholder (0.618469ms)
+✔ image answer skips blank trailing assistant nodes and keeps new text (0.105155ms)
+✔ image answer ignores unchanged prior assistant text (0.093834ms)
+✔ provider order is deduplicated and configurable (1.08718ms)
+[image-upload] catbox upload returned 429: rate limited; trying next provider
+✔ 429 from one host falls through to next host (19.428514ms)
+✔ uses current ImgPile binary upload API and data.urls.original (1.941986ms)
+✔ uses Postimages API endpoint and parses direct XML URL (1.825641ms)
+✔ resolves Postimages page XML to i.postimg.cc direct URL (1.53416ms)
+✔ navigation skips pages already on a ChatGPT or OpenAI auth host (1.093822ms)
+✔ navigation commits instead of waiting out a Cloudflare interstitial (0.220028ms)
+✔ a forced navigation still restarts an in-progress chat (0.115896ms)
+✔ ChatGPT page request is an invokable Playwright function (0.859306ms)
+✔ trimPromptFormatting removes trailing spaces and repeated blank lines (0.73219ms)
+✔ compactStructuredPrompt keeps prompt start and latest answer within limit (0.68386ms)
+✔ short prompt stays byte-for-byte meaningful (0.12942ms)
+✔ single oversized block uses both head-tail fallback budgets (4.106397ms)
+✔ structured compaction trims oversized tool and latest blocks (0.356863ms)
+✔ structured compaction supports dropping first block and empty selections (0.200222ms)
+✔ compaction summary reports omitted and empty details (0.125783ms)
+✔ bridge API returns correlated structured error for unsupported calls (277.678809ms)
+✔ extractChatGPTAssistantText selects latest non-empty assistant text (1.042927ms)
+✔ response cleaning removes UI noise but preserves answer lines (0.123239ms)
+✔ extractors handle model, reasoning, and empty payloads (0.307812ms)
+✔ extractors cover direct messages, fallback model fields, and nested values (0.218546ms)
+✔ SSE extractor returns final answer after completion marker (3.889915ms)
+✔ SSE extractor ignores empty, unrelated, and malformed lines (0.259852ms)
+✔ session keys and templates reject malformed values (1.062644ms)
+✔ latest assistant message id is time ordered (0.217384ms)
+✔ sessions round-trip and apply parent message id (0.553047ms)
+✔ session storage rejects malformed and invalid entries (0.914409ms)
+ℹ tests 44
+ℹ suites 0
+ℹ pass 44
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1146.129981
+exit_code=0
+$ npm run test:frontend
+
+> screen-agent@0.1.0 test:frontend
+> pnpm --dir frontend run test
+
+
+> @screen-agent/frontend@0.1.0 test /home/satu/Documents/SolveThisQuestion/frontend
+> vitest run --passWithNoTests
+
+
+ RUN  v4.1.11 /home/satu/Documents/SolveThisQuestion/frontend
+
+
+ Test Files  1 passed (1)
+      Tests  6 passed (6)
+   Start at  07:45:52
+   Duration  189ms (transform 68ms, setup 0ms, import 87ms, tests 7ms, environment 0ms)
+
+exit_code=0
+$ npx eslint bridge/image-upload.mjs bridge/test/image-upload.test.mjs --max-warnings 0
+exit_code=0
+$ git diff --check
+exit_code=0
+$ git apply --check --reverse -p0 .audit/postimages-fix.patch
+exit_code=0

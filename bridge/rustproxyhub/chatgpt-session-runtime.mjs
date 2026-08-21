@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { chatGPTSessionFromTemplate, chatGPTSessionKey, latestChatGPTAssistantMessageId, loadChatGPTWebSessions, saveChatGPTWebSessions } from './chatgpt-web-session.mjs'
 import { assertSafeAccountId, closeChromiumProfileInstances, isProfileSingletonError, removeStaleChromiumProfileLock } from './chromium-profile.mjs'
-import { applyStealthScripts, bridgeDebug, chromium, ensureDir, envBool, isOnHost, resolveEngine, sleep, stealthArgs } from './browser-runtime.mjs'
+import { applyStealthScripts, bridgeDebug, chromium, ensureDir, envBool, gotoChatGPT, isOnHost, resolveEngine, sleep, stealthArgs } from './browser-runtime.mjs'
 import {
   CHATGPT_WEB_MODEL_ENDPOINTS,
   addKnownChatGPTModels,
@@ -188,14 +188,12 @@ function chatGPTInitKey(params = {}) {
 }
 
 const CHATGPT_INPUT_SELECTOR = 'textarea:visible, #prompt-textarea:visible, div[contenteditable="true"]:visible'
-const CHATGPT_SEND_SELECTOR = 'button[data-testid="send-button"]:visible, button[aria-label="Send prompt"]:visible'
+const CHATGPT_SEND_SELECTOR = 'button#composer-submit-button:visible, button[data-testid="send-button"]:visible, button[aria-label="Send prompt"]:visible'
 
 async function ensureChatGPTInteractivePage({ runtime_dir, browser } = {}) {
   let page = state.chatgpt.page
   if (!page) throw new Error('ChatGPT Playwright not initialized')
-  if (!isOnHost(page.url(), 'chatgpt.com')) {
-    await page.goto('https://chatgpt.com/', { waitUntil: 'domcontentloaded' })
-  }
+  await gotoChatGPT(page)
 
   const waitForComposer = async (target) => {
     const input = target.locator(CHATGPT_INPUT_SELECTOR).first()

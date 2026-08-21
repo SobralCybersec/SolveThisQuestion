@@ -19,13 +19,27 @@ function isOnHost(rawUrl, ...hosts) {
   })
 }
 
+const CHATGPT_URL = 'https://chatgpt.com/'
+
+// chatgpt.com sits behind Cloudflare. Two rules keep its interstitial from
+// eating a navigation: never re-navigate a page already on a ChatGPT or OpenAI
+// auth host - that yanks a half-finished sign-in back to the root and earns a
+// fresh challenge - and wait for 'commit' instead of 'domcontentloaded', which
+// a challenge page never reaches in time. Callers still decide the page is
+// usable by waiting for the composer.
+async function gotoChatGPT(page, { force = false, timeout = 60000 } = {}) {
+  if (!force && isOnHost(page.url(), 'chatgpt.com', 'openai.com')) return page
+  await page.goto(CHATGPT_URL, { waitUntil: 'commit', timeout })
+  return page
+}
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-async function importPlaywright() {
+async function importBrowserPackage(name) {
   const candidateUrls = [
-    new URL('./node_modules/playwright/index.mjs', import.meta.url),
-    new URL('../node_modules/playwright/index.mjs', import.meta.url),
-    new URL('../../node_modules/playwright/index.mjs', import.meta.url),
-    new URL('../../../node_modules/playwright/index.mjs', import.meta.url),
+    new URL(`./node_modules/${name}/index.mjs`, import.meta.url),
+    new URL(`../node_modules/${name}/index.mjs`, import.meta.url),
+    new URL(`../../node_modules/${name}/index.mjs`, import.meta.url),
+    new URL(`../../../node_modules/${name}/index.mjs`, import.meta.url),
   ]
 
   for (const candidate of candidateUrls) {
@@ -46,26 +60,26 @@ async function importPlaywright() {
       continue
     }
 
-    const playwrightDir = fs
+    const packageDir = fs
       .readdirSync(root, { withFileTypes: true })
-      .find((entry) => entry.isDirectory() && entry.name.startsWith('playwright@'))
+      .find((entry) => entry.isDirectory() && entry.name.startsWith(`${name}@`))
 
-    if (!playwrightDir) {
+    if (!packageDir) {
       continue
     }
 
-    const candidate = path.join(root, playwrightDir.name, 'node_modules', 'playwright', 'index.mjs')
+    const candidate = path.join(root, packageDir.name, 'node_modules', name, 'index.mjs')
     if (fs.existsSync(candidate)) {
       return import(pathToFileURL(candidate).href)
     }
   }
 
-  return import('playwright')
+  return import(name)
 }
 
 export function browserBackendFromEnv(env = process.env) {
   const backend = String(env.RUST_PROXY_BROWSER_BACKEND || 'playwright').trim().toLowerCase()
-  if (backend !== 'playwright' && backend !== 'patchright') {
+  if (backend !== 'playwright') {
     throw new Error(`unsupported browser backend: ${backend}`)
   }
   return backend
@@ -73,12 +87,11 @@ export function browserBackendFromEnv(env = process.env) {
 
 async function importBrowserAutomation() {
   const backend = browserBackendFromEnv()
-  if (backend === 'playwright') return importPlaywright()
   try {
-    return await import('patchright')
+    return await importBrowserPackage(backend)
   } catch (error) {
     throw new Error(
-      `Patchright backend selected but package is unavailable: ${error instanceof Error ? error.message : String(error)}`,
+      `${backend} backend selected but package is unavailable: ${error instanceof Error ? error.message : String(error)}`,
     )
   }
 }
@@ -152,9 +165,12 @@ function resolveChromium(preferredChannel) {
   if (preferredChannel && firstExisting(BROWSER_PATHS[preferredChannel] ?? [])) {
     return { engine: chromium, channel: preferredChannel }
   }
+  if (!preferredChannel && firstExisting(BROWSER_PATHS.chrome)) {
+    return { engine: chromium, channel: 'chrome' }
+  }
   const order = preferredChannel
     ? [preferredChannel, 'msedge', 'chrome', 'chromium']
-    : ['chromium', 'chrome', 'msedge']
+    : ['chrome', 'chromium', 'msedge']
   for (const key of order) {
     const executablePath = browserExecutablePath(key)
     if (executablePath) {
@@ -258,9 +274,6 @@ function envBool(name, fallback) {
 }
 
 function resolveEngine(browser) {
-  if (browserBackendFromEnv() === 'patchright' && !['chromium', 'chrome', 'msedge', 'edge'].includes(String(browser || 'chromium').toLowerCase())) {
-    throw new Error('patchright backend supports Chromium-family browsers only')
-  }
   switch (browser) {
     case 'firefox':
       return { engine: firefox }
@@ -301,4 +314,4 @@ const DIRECT_MODEL_PATTERNS = {
   chatgpt: /\b(?:gpt|o[0-9]|chatgpt)[a-zA-Z0-9_.:-]{1,80}\b/g,
 }
 
-export { applyStealthScripts, bridgeDebug, chromium, ensureDir, envBool, firefox, isOnHost, resolveEngine, send, sendEvent, sleep, stealthArgs, webkit }
+export { CHATGPT_URL, applyStealthScripts, bridgeDebug, chromium, ensureDir, envBool, firefox, gotoChatGPT, isOnHost, resolveEngine, send, sendEvent, sleep, stealthArgs, webkit }

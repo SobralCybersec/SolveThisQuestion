@@ -1,4 +1,5 @@
 const DEFAULT_PROMPT_DEADLINE_MS = 60_000
+const DEFAULT_BUTTON_SUBMIT_TIMEOUT_MS = 5_000
 const DEFAULT_SEND_CHECK_INTERVAL_MS = 100
 const DEFAULT_BUTTON_POLL_INTERVAL_MS = 150
 export const DEFAULT_RESPONSE_POLL_ATTEMPTS = 40
@@ -14,6 +15,10 @@ export async function composerText(composer) {
 async function submitButtonReady(button) {
   if (!await button.count()) return false
   if (!await button.isVisible().catch(() => false)) return false
+  const ariaDisabled = typeof button.getAttribute === 'function'
+    ? await button.getAttribute('aria-disabled').catch(() => null)
+    : null
+  if (ariaDisabled === 'true') return false
   return !await button.isDisabled().catch(() => true)
 }
 
@@ -33,8 +38,15 @@ async function tryButtonSubmit(options) {
   const { page, composer, selector, readText, sleep, intervalMs, onSubmitted } = options
   const sendButton = page.locator(selector).last()
   if (!await submitButtonReady(sendButton)) return null
-  await sendButton.click({ force: true }).catch(() => {})
-  return waitForComposerClear({ composer, readText, sleep, intervalMs, attempts: 20, method: 'button', onSubmitted })
+  try {
+    await sendButton.click({ force: true })
+  } catch {
+    return { attempted: true, submitted: null }
+  }
+  return {
+    attempted: true,
+    submitted: await waitForComposerClear({ composer, readText, sleep, intervalMs, attempts: 20, method: 'button', onSubmitted }),
+  }
 }
 
 async function tryKeyboardSubmit(options) {
@@ -49,6 +61,7 @@ export async function submitChatGPTPrompt(options = {}) {
     composer,
     selector,
     deadlineMs = DEFAULT_PROMPT_DEADLINE_MS,
+    buttonSubmitTimeoutMs = DEFAULT_BUTTON_SUBMIT_TIMEOUT_MS,
     sendCheckIntervalMs = DEFAULT_SEND_CHECK_INTERVAL_MS,
     buttonPollIntervalMs = DEFAULT_BUTTON_POLL_INTERVAL_MS,
     now = () => Date.now(),
@@ -56,10 +69,11 @@ export async function submitChatGPTPrompt(options = {}) {
     readText = composerText,
     onSubmitted = () => {},
   } = options
-  const deadline = now() + deadlineMs
+  const deadline = now() + Math.min(deadlineMs, buttonSubmitTimeoutMs)
   while (now() < deadline) {
-    const submitted = await tryButtonSubmit({ page, composer, selector, readText, sleep, intervalMs: sendCheckIntervalMs, onSubmitted })
-    if (submitted) return submitted
+    const buttonAttempt = await tryButtonSubmit({ page, composer, selector, readText, sleep, intervalMs: sendCheckIntervalMs, onSubmitted })
+    if (buttonAttempt?.submitted) return buttonAttempt.submitted
+    if (buttonAttempt?.attempted) break
     await sleep(buttonPollIntervalMs)
   }
 

@@ -7,7 +7,7 @@ import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { uploadImageWithFallback } from "./image-upload.mjs";
 
-const { chromium } = await import("playwright");
+const { chromium } = await import("./rustproxyhub/browser-runtime.mjs");
 const runtime = process.env.SCREEN_AGENT_RUNTIME || path.resolve(".runtime");
 const captureDir = path.join(runtime, "captures");
 const embeddedBridge = path.join(path.dirname(fileURLToPath(import.meta.url)), "rustproxyhub/index.mjs");
@@ -277,6 +277,7 @@ async function chat(command) {
         chatgpt_mode: process.env.GPT_PROXY_CHATGPT_MODE || "web",
         session_id: process.env.GPT_PROXY_SESSION_ID || "screen-agent",
         prompt,
+        history,
         web_search: Boolean(command.web_search),
         stream: false,
         runtime_dir: runtime,

@@ -15,7 +15,12 @@ export async function queueChat(prompt: string, history: Pick<ChatMessage, "role
     body: JSON.stringify({ prompt, history }),
   });
   const payload = await response.json();
-  return { ok: response.ok, messageId: payload.message_id as string | undefined, error: payload.error || "Could not send message" };
+  const messageId = typeof payload.message_id === "string" ? payload.message_id : undefined;
+  return {
+    ok: response.ok && Boolean(messageId),
+    messageId,
+    error: payload.error || (response.ok && !messageId ? "Chat response did not include a message ID" : "Could not send message"),
+  };
 }
 
 async function submitChat(prompt: string, history: Pick<ChatMessage, "role" | "content">[]) {
@@ -36,12 +41,13 @@ type ComposerContext = {
   setThinking: (value: boolean) => void;
   setError: (value: string) => void;
   setActiveMessageId: (value: string | null) => void;
+  eventsReady: boolean;
 };
 
 async function sendChatMessage(context: ComposerContext) {
   context.event?.preventDefault();
   const prompt = context.draft.trim();
-  if (!prompt || context.thinking) return;
+  if (!prompt || context.thinking || !context.eventsReady) return;
   const history = context.messages.map(({ role, content }) => ({ role, content }));
   context.setMessages((current) => [...current, { id: crypto.randomUUID(), role: "user", content: prompt }]);
   context.setDraft("");
@@ -113,10 +119,25 @@ function useChatEvents(setMessages: MessageSetter, setThinking: (value: boolean)
   const activeMessageIdRef = useRef<string | null>(null);
   const completedMessageIdsRef = useRef(new Set<string>());
   const pendingEventsRef = useRef(new Map<string, PendingChatEvent>());
+  const eventsReadyRef = useRef(false);
+  const [eventsReady, setEventsReady] = useState(false);
 
   useEffect(() => {
     inputRef.current?.focus();
     const source = new EventSource(`${API_BASE}/api/events`);
+    const setReady = (value: boolean) => {
+      eventsReadyRef.current = value;
+      setEventsReady(value);
+    };
+    source.onopen = () => setReady(true);
+    source.onerror = () => {
+      setReady(false);
+      if (!activeMessageIdRef.current) return;
+      activeMessageIdRef.current = null;
+      pendingEventsRef.current.clear();
+      setThinking(false);
+      setError("Chat event stream disconnected; retry message.");
+    };
     const onThinking = (event: MessageEvent<string>) => {
       const data = parseChatEvent(event);
       if (data?.message_id !== activeMessageIdRef.current) return;
@@ -128,12 +149,21 @@ function useChatEvents(setMessages: MessageSetter, setThinking: (value: boolean)
     source.addEventListener("chat.thinking", onThinking);
     source.addEventListener("chat.message", onMessage);
     source.addEventListener("chat.failed", onFailure);
-    return () => source.close();
+    return () => {
+      setReady(false);
+      source.close();
+    };
   }, []);
 
   const setActiveMessageId = (value: string | null) => {
     activeMessageIdRef.current = value;
     if (!value) return;
+    if (!eventsReadyRef.current) {
+      activeMessageIdRef.current = null;
+      setThinking(false);
+      setError("Chat event stream disconnected; retry message.");
+      return;
+    }
     const pending = pendingEventsRef.current.get(value);
     if (!pending) return;
     pendingEventsRef.current.delete(value);
@@ -141,7 +171,7 @@ function useChatEvents(setMessages: MessageSetter, setThinking: (value: boolean)
     else finishFailure(pending.data, activeMessageIdRef, setThinking, setError);
   };
 
-  return { inputRef, setActiveMessageId };
+  return { inputRef, setActiveMessageId, eventsReady };
 }
 
 function ChatMessages({ messages, thinking, error, messagesRef }: { messages: ChatMessage[]; thinking: boolean; error: string; messagesRef: React.MutableRefObject<HTMLDivElement | null> }) {
@@ -163,14 +193,14 @@ export default function ChatOverlay() {
   const [thinking, setThinking] = useState(false);
   const [error, setError] = useState("");
   const messagesRef = useRef<HTMLDivElement>(null);
-  const { inputRef, setActiveMessageId } = useChatEvents(setMessages, setThinking, setError);
+  const { inputRef, setActiveMessageId, eventsReady } = useChatEvents(setMessages, setThinking, setError);
 
   useEffect(() => {
     const element = messagesRef.current;
     if (element) element.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
   }, [messages, thinking, error]);
 
-  const send = (event?: FormEvent) => void sendChatMessage({ event, draft, thinking, messages, setMessages, setDraft, setThinking, setError, setActiveMessageId });
+  const send = (event?: FormEvent) => void sendChatMessage({ event, draft, thinking, messages, setMessages, setDraft, setThinking, setError, setActiveMessageId, eventsReady });
 
   async function close() {
     await fetch(`${API_BASE}/api/chat/toggle`, { method: "POST" }).catch(() => {});
@@ -194,7 +224,7 @@ export default function ChatOverlay() {
           rows={3}
           aria-label="Message agent"
         />
-        <Button className="chat-send" type="submit" disabled={!draft.trim() || thinking}>Send <span>↗</span></Button>
+        <Button className="chat-send" type="submit" disabled={!draft.trim() || thinking || !eventsReady}>Send <span>↗</span></Button>
       </div>
     </form>
   </main>;

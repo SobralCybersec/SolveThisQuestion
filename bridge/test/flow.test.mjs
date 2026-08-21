@@ -77,6 +77,30 @@ test('prompt submission uses enabled button and clears composer quickly', async 
   assert.equal(clicks, 1)
 })
 
+test('prompt submission honors aria-disabled and falls back to Enter', async () => {
+  let value = 'prompt'
+  let clock = 0
+  const button = {
+    count: async () => 1,
+    isVisible: async () => true,
+    getAttribute: async name => name === 'aria-disabled' ? 'true' : null,
+    isDisabled: async () => false,
+    click: async () => { throw new Error('button must not be clicked') },
+  }
+  const method = await submitChatGPTPrompt({
+    page: { locator: () => ({ last: () => button }) },
+    composer: {
+      inputValue: async () => value,
+      press: async key => { assert.equal(key, 'Enter'); value = '' },
+    },
+    selector: 'button#composer-submit-button, button[data-testid="send-button"], button[aria-label="Send prompt"]',
+    deadlineMs: 1,
+    now: () => clock,
+    sleep: async ms => { clock += ms },
+  })
+  assert.equal(method, 'keyboard')
+})
+
 test('prompt submission falls back to Enter after button deadline', async () => {
   let value = 'prompt'
   const composer = {

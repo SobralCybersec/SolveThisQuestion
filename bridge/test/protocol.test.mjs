@@ -10,7 +10,6 @@ test('bridge API returns correlated structured error for unsupported calls', asy
   const child = spawn(process.execPath, [path.join(bridgeDir, 'rustproxyhub/index.mjs')], {
     cwd: bridgeDir,
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env, RUST_PROXY_BROWSER_BACKEND: 'playwright' },
   })
   t.after(() => child.kill('SIGTERM'))
   child.stdin.write(`${JSON.stringify({ id: 'api-test', provider: 'unknown', method: 'status' })}\n`)

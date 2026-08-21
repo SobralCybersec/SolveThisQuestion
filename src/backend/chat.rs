@@ -16,7 +16,9 @@ fn bad_request(message: impl Into<String>) -> (StatusCode, Json<serde_json::Valu
     )
 }
 
-pub(crate) async fn toggle_chat_endpoint(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+pub(crate) async fn toggle_chat_endpoint(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
     toggle_chat_overlay(state.app.clone());
     Json(serde_json::json!({ "status": "toggled" }))
 }

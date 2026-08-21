@@ -5,11 +5,10 @@ import { extractChatGPTAssistantModel, extractChatGPTAssistantReasoning, extract
 import { waitForChatGPTResponse } from './chatgpt-web-flow.mjs'
 import { chatGPTSessionFromTemplate, chatGPTSessionKey, latestChatGPTAssistantMessageId } from './chatgpt-web-session.mjs'
 import { CHATGPT_PAGE_REQUEST } from './chatgpt-web-page.mjs'
-import { bridgeDebug, envBool, isOnHost, sleep } from './browser-runtime.mjs'
+import { bridgeDebug, envBool, gotoChatGPT, isOnHost, sleep } from './browser-runtime.mjs'
 import { listChatGPTHybridModels } from './chatgpt-model-discovery.mjs'
 import { chatChatGPTWithImage } from './chatgpt-image-controller.mjs'
 import {
-  CHATGPT_INPUT_SELECTOR,
   CHATGPT_WEB_MODEL_ENDPOINTS,
   addKnownChatGPTModels,
   addModelCandidate,
@@ -17,7 +16,6 @@ import {
   captureChatGPTTemplate,
   closeContext,
   compactChatGPTPrompt,
-  ensureChatGPTInteractivePage,
   ensureLiveChatGPTSession,
   ensureSessionText,
   getChatGPTBasicHeaders,
@@ -35,9 +33,7 @@ import {
 async function listChatGPTModels() {
   const page = state.chatgpt.page
   if (!page) throw new Error('ChatGPT Playwright not initialized')
-  if (!isOnHost(page.url(), 'chatgpt.com')) {
-    await page.goto('https://chatgpt.com/', { waitUntil: 'domcontentloaded' })
-  }
+  await gotoChatGPT(page)
 
   await waitForInteractiveSelector(page, [
     'textarea:visible',
@@ -121,13 +117,33 @@ function assertChatGPTConversation(sent, conversationId) {
   throw new Error(`ChatGPT upstream request failed with status ${sent.requestResult.status}${suffix}`)
 }
 
+// Forbidden header names: the browser drops them, and sending them at all is a
+// mismatch worth not advertising. Cookies ride along via credentials: 'include'.
+const BROWSER_MANAGED_HEADERS = new Set(['cookie', 'origin', 'referer', 'user-agent', 'accept-encoding', 'connection', 'host'])
+
+// Poll from inside the page. page.context().request leaves over Node's TLS
+// stack, so Cloudflare saw a non-Chrome fingerprint carrying Chrome's cookies
+// on a chatgpt.com backend call - exactly the mismatch it challenges.
+function readChatGPTConversationInPage(page, conversationId, responseHeaders) {
+  const headers = Object.fromEntries(
+    Object.entries(responseHeaders).filter(([name, value]) => value && !BROWSER_MANAGED_HEADERS.has(name.toLowerCase())),
+  )
+  return async () => {
+    const result = await page.evaluate(
+      async ({ url, requestHeaders }) => {
+        const response = await fetch(url, { headers: requestHeaders, credentials: 'include' })
+        return { status: response.status, ok: response.ok, body: await response.text() }
+      },
+      { url: `https://chatgpt.com/backend-api/conversation/${conversationId}`, requestHeaders: headers },
+    )
+    return { status: () => result.status, ok: () => result.ok, text: async () => result.body }
+  }
+}
+
 async function readChatGPTConversation(options) {
   const { page, conversationId, responseHeaders, previousAssistantMessageId, prompt } = options
   return waitForChatGPTResponse({
-    read: () => page.context().request.get(
-      `https://chatgpt.com/backend-api/conversation/${conversationId}`,
-      { headers: responseHeaders, timeout: 10000 },
-    ),
+    read: readChatGPTConversationInPage(page, conversationId, responseHeaders),
     extractText: body => {
       try {
         const payload = JSON.parse(body)
@@ -264,7 +280,7 @@ async function openChatGPTLogin({ runtime_dir, browser } = {}) {
   bridgeDebug(`chatgpt manual login start browser=${browser || 'chromium'}`)
   await initChatGPT({ runtime_dir, headless: false, browser })
   await state.chatgpt.page.bringToFront().catch(() => {})
-  await state.chatgpt.page.goto('https://chatgpt.com/', { waitUntil: 'domcontentloaded' })
+  await gotoChatGPT(state.chatgpt.page)
   bridgeDebug(`chatgpt manual login ready url=${state.chatgpt.page.url()}`)
 }
 
@@ -292,17 +308,15 @@ async function chatGPTStatus({ runtime_dir, browser } = {}) {
     headless: state.chatgpt.context ? state.chatgpt.headless : envBool('SCREEN_AGENT_CHATGPT_HEADLESS', true),
     browser: browser || state.chatgpt.browserChoice || 'chromium',
   })
-  let page = state.chatgpt.page
-  try {
-    page = await ensureChatGPTInteractivePage({ runtime_dir, browser })
-  } catch (error) {
-    bridgeDebug(`chatgpt status unavailable: ${error instanceof Error ? error.message : String(error)}`)
-  }
+  // Status is polled every couple of seconds while the user signs in, so it
+  // must never navigate or wait on the composer: doing either dragged a
+  // half-finished login back to chatgpt.com and burned a fresh Cloudflare
+  // challenge on each poll. The session cookie is the real answer; a stale one
+  // surfaces as a 401 on the next chat, which sendChatGPTWithRetries retries.
   const cookies = await state.chatgpt.context.cookies('https://chatgpt.com').catch(() => [])
-  const hasComposer = await page?.locator(CHATGPT_INPUT_SELECTOR).first().isVisible().catch(() => false)
   return {
     mode: 'embedded',
-    logged_in: cookies.some((cookie) => /session-token/i.test(cookie.name) && cookie.value) && hasComposer,
+    logged_in: cookies.some((cookie) => /session-token/i.test(cookie.name) && cookie.value),
     profile_dir: path.resolve('chatgpt_profile'),
   }
 }

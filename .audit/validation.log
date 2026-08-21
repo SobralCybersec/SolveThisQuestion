@@ -1,0 +1,134 @@
+BASELINE: files from HEAD before this fix
+$ node --test --test-concurrency=1 bridge/test/flow.test.mjs
+✔ waitForChatGPTResponse retries empty bodies and returns first answer (1.569142ms)
+✔ waitForChatGPTResponse stops unauthorized polling immediately (0.168364ms)
+✔ waitForChatGPTResponse keeps polling when extractor rejects stale content (0.206866ms)
+✔ prompt submission uses enabled button and clears composer quickly (0.422957ms)
+✔ prompt submission falls back to Enter after button deadline (0.246849ms)
+✔ prompt submission polls uncleared button then uses keyboard (0.541578ms)
+✔ prompt submission reports failure when keyboard leaves composer populated (0.59634ms)
+✔ poll defaults bound empty-response wait (0.145942ms)
+✔ empty assistant answer requests fresh chat after ten seconds (0.327029ms)
+✔ assistant answer waits for stable non-streaming text (0.339402ms)
+✔ assistant answer handles streaming and uses default timing callbacks (4.646411ms)
+✔ response polling supports default extractor (0.183952ms)
+✔ composer text falls back to inner text when input value fails (0.206494ms)
+ℹ tests 13
+ℹ suites 0
+ℹ pass 13
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 57.24857
+exit_code=0
+
+MODIFIED: current worktree
+$ node --test --test-concurrency=1 bridge/test/flow.test.mjs
+✔ waitForChatGPTResponse retries empty bodies and returns first answer (1.404655ms)
+✔ waitForChatGPTResponse stops unauthorized polling immediately (0.686218ms)
+✔ waitForChatGPTResponse keeps polling when extractor rejects stale content (0.192058ms)
+✔ prompt submission uses enabled button and clears composer quickly (0.439949ms)
+✔ prompt submission honors aria-disabled and falls back to Enter (0.326298ms)
+✔ prompt submission falls back to Enter after button deadline (0.188ms)
+✔ prompt submission polls uncleared button then uses keyboard (0.598885ms)
+✔ prompt submission reports failure when keyboard leaves composer populated (0.512474ms)
+✔ poll defaults bound empty-response wait (0.159206ms)
+✔ empty assistant answer requests fresh chat after ten seconds (0.369628ms)
+✔ assistant answer waits for stable non-streaming text (0.19336ms)
+✔ assistant answer handles streaming and uses default timing callbacks (4.485221ms)
+✔ response polling supports default extractor (0.148947ms)
+✔ composer text falls back to inner text when input value fails (0.200313ms)
+ℹ tests 14
+ℹ suites 0
+ℹ pass 14
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 56.550881
+exit_code=0
+$ npm run test:bridge
+
+> screen-agent@0.1.0 test:bridge
+> node --test --test-concurrency=1 bridge/test/*.test.mjs
+
+✔ waitForChatGPTResponse retries empty bodies and returns first answer (1.408072ms)
+✔ waitForChatGPTResponse stops unauthorized polling immediately (0.634992ms)
+✔ waitForChatGPTResponse keeps polling when extractor rejects stale content (0.190676ms)
+✔ prompt submission uses enabled button and clears composer quickly (0.422828ms)
+✔ prompt submission honors aria-disabled and falls back to Enter (0.33796ms)
+✔ prompt submission falls back to Enter after button deadline (0.206444ms)
+✔ prompt submission polls uncleared button then uses keyboard (0.577967ms)
+✔ prompt submission reports failure when keyboard leaves composer populated (0.528484ms)
+✔ poll defaults bound empty-response wait (0.153126ms)
+✔ empty assistant answer requests fresh chat after ten seconds (0.374568ms)
+✔ assistant answer waits for stable non-streaming text (0.19317ms)
+✔ assistant answer handles streaming and uses default timing callbacks (4.707296ms)
+✔ response polling supports default extractor (0.177791ms)
+✔ composer text falls back to inner text when input value fails (0.200603ms)
+✔ image answer accepts assistant node reused as response placeholder (0.666501ms)
+✔ image answer skips blank trailing assistant nodes and keeps new text (0.111307ms)
+✔ image answer ignores unchanged prior assistant text (0.112871ms)
+✔ provider order is deduplicated and configurable (1.092465ms)
+[image-upload] catbox upload returned 429: rate limited; trying next provider
+✔ 429 from one host falls through to next host (20.39115ms)
+✔ uses current ImgPile binary upload API and data.urls.original (2.026223ms)
+✔ uses Postimages API endpoint and parses direct XML URL (1.77741ms)
+✔ navigation skips pages already on a ChatGPT or OpenAI auth host (1.276016ms)
+✔ navigation commits instead of waiting out a Cloudflare interstitial (0.216994ms)
+✔ a forced navigation still restarts an in-progress chat (0.125794ms)
+✔ ChatGPT page request is an invokable Playwright function (0.903252ms)
+✔ trimPromptFormatting removes trailing spaces and repeated blank lines (0.843691ms)
+✔ compactStructuredPrompt keeps prompt start and latest answer within limit (0.727194ms)
+✔ short prompt stays byte-for-byte meaningful (0.133799ms)
+✔ single oversized block uses both head-tail fallback budgets (1.099738ms)
+✔ structured compaction trims oversized tool and latest blocks (0.372784ms)
+✔ structured compaction supports dropping first block and empty selections (0.201896ms)
+✔ compaction summary reports omitted and empty details (0.516081ms)
+✔ bridge API returns correlated structured error for unsupported calls (286.964066ms)
+✔ extractChatGPTAssistantText selects latest non-empty assistant text (1.03661ms)
+✔ response cleaning removes UI noise but preserves answer lines (0.165689ms)
+✔ extractors handle model, reasoning, and empty payloads (0.319986ms)
+✔ extractors cover direct messages, fallback model fields, and nested values (0.230449ms)
+✔ SSE extractor returns final answer after completion marker (0.86443ms)
+✔ SSE extractor ignores empty, unrelated, and malformed lines (0.186508ms)
+✔ session keys and templates reject malformed values (1.110197ms)
+✔ latest assistant message id is time ordered (0.213978ms)
+✔ sessions round-trip and apply parent message id (0.561927ms)
+✔ session storage rejects malformed and invalid entries (0.860252ms)
+ℹ tests 43
+ℹ suites 0
+ℹ pass 43
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1181.285629
+exit_code=0
+$ npm run test:frontend
+
+> screen-agent@0.1.0 test:frontend
+> pnpm --dir frontend run test
+
+
+> @screen-agent/frontend@0.1.0 test /home/satu/Documents/SolveThisQuestion/frontend
+> vitest run --passWithNoTests
+
+
+ RUN  v4.1.11 /home/satu/Documents/SolveThisQuestion/frontend
+
+
+ Test Files  1 passed (1)
+      Tests  6 passed (6)
+   Start at  07:29:01
+   Duration  197ms (transform 70ms, setup 0ms, import 91ms, tests 7ms, environment 0ms)
+
+exit_code=0
+$ npx eslint bridge/rustproxyhub/chatgpt-web-flow.mjs bridge/rustproxyhub/chatgpt-session-runtime.mjs bridge/test/flow.test.mjs --max-warnings 0
+exit_code=0
+$ git diff --check
+exit_code=0
+
+$ git apply --check --reverse -p0 .audit/prompt-submit-fix.patch
+exit_code=0
